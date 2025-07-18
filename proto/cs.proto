@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package pb;
+
+
+service CS {
+    rpc Hello(CSHelloReq) returns (CSHelloRsp) {}
+}
+
+message CSHelloReq {
+    string message = 1;
+}
+
+message CSHelloRsp {
+    string message = 1;
+}
