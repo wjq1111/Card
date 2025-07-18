@@ -10,6 +10,8 @@ from proto import cs_pb2_grpc
 
 from concurrent import futures
 
+from gameplay import Gameplay
+
 class CSServicer(cs_pb2_grpc.CSServicer):
     def __init__(self):
         self.db = {}
@@ -23,6 +25,17 @@ def main():
     cs_pb2_grpc.add_CSServicer_to_server(CSServicer(), server)
     server.add_insecure_port("[::]:50051")
     server.start()
+
+    gameplay = Gameplay()
+    gameplay.join_player("player1", 1000)
+    gameplay.join_player("player2", 1000)
+    gameplay.join_player("player3", 1000)
+    
+    gameplay.init_gameplay()
+    gameplay.flop_card()
+    gameplay.turn_card()
+    gameplay.river_card()
+    
     server.wait_for_termination()
 
 
