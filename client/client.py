@@ -9,7 +9,7 @@ from proto import cs_pb2
 from proto import cs_pb2_grpc
 
 def main():
-    with grpc.insecure_channel("localhost:50051") as channel:
+    with grpc.insecure_channel("111.229.201.75:50051") as channel:
         stub = cs_pb2_grpc.CSStub(channel)
         print("send message:Hello")
         stub.Hello(cs_pb2.CSHelloReq(message="Hello"))
