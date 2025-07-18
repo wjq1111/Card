@@ -4,6 +4,7 @@ from card import Suit
 from player import Player
 
 import random
+import time
 
 # 一整个牌局的信息都记录在这里
 class Gameplay:
@@ -17,6 +18,8 @@ class Gameplay:
         self.total_chips = 0 # 所有已经下注的筹码
         self.button_player_index = 0 # 庄家的玩家下标
         self.current_action_player_index = 0 # 现在该谁行动的下标
+        
+        self.tick_rate = 1 # tick 30fps
     
     # 初始化
     def init_gameplay(self):
@@ -73,4 +76,25 @@ class Gameplay:
         
     # 比大小
     def compare(self):
+        return
+    
+    # 主循环tick
+    def update(self):
+        print("server tick", time.time())
+        return
+    
+    def start(self):
+        print("gameplay start")
+        while True:
+            start_time = time.time()
+            self.update()
+            
+            process_time = time.time() - start_time
+            sleep_time = self.tick_rate - process_time
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+            else:
+                print(f"gameplay delay {-sleep_time:.4f} seconds")
+            
+    def stop(self):
         return
