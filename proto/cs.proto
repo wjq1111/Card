@@ -4,13 +4,46 @@ package pb;
 
 
 service CS {
-    rpc Hello(CSHelloReq) returns (CSHelloRsp) {}
+    // 正常的grpc是通过stream流来实现服务器主动推送消息到客户端的，建立一个长期的连接，服务器通过这个连接发送消息
+    // 但是没必要，做一个心跳包保活，同步实时的单局信息即可
+    // 心跳
+    rpc Heartbeat(CSReqHeartbeat) returns (CSResHeartbeat) {}
+
+    // 加入对局
+    rpc JoinPlayer(CSReqJoinPlayer) returns (CSResJoinPlayer) {}
+
+    // 开始对局
+    rpc StartGameplay(CSReqStartGameplay) returns (CSResStartGameplay) {}
 }
 
-message CSHelloReq {
-    string message = 1;
+message CSGameplay {
+    repeated Player players = 1; // 玩家信息
+    int32 button_player_index = 2; // 庄家位置下标
+
+    message Player {
+        uint64 uid = 1; // 玩家id
+        int32 index = 2; // 位置
+    }
 }
 
-message CSHelloRsp {
-    string message = 1;
+message CSReqHeartbeat {
+    uint64 uid = 1; // 玩家id
 }
+
+message CSResHeartbeat {
+    CSGameplay gameplay = 1;
+}
+
+message CSReqJoinPlayer {
+    uint64 uid = 1; // 玩家id
+    string name = 2; // 名字
+    int64 chips = 3; // 自己的筹码
+}
+
+message CSResJoinPlayer {}
+
+message CSReqStartGameplay {
+    uint64 uid = 1; // 目前谁开始都可以
+}
+
+message CSResStartGameplay {}

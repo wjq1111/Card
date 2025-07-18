@@ -33,11 +33,14 @@ class EventType(Enum):
     PLAYER_BET = 6 # 玩家下注
 
 class Event():
-    def __init__(self, event_type):
+    def __init__(self, event_type: EventType):
         self.event_type = event_type
 
+class Gameplay:
+    pass
+
 class StateBase:
-    def __init__(self, state_type, gameplay):
+    def __init__(self, state_type: StateType, gameplay: Gameplay):
         self.state_type = state_type # 状态类型
         self.enter_timestamp = time.time() # 进入这个状态的时间
         self.timeout_time = 600000 # 多长时间超时
@@ -66,7 +69,7 @@ class StateBase:
         return
 
 class Transition:
-    def __init__(self, state_type, event_type):
+    def __init__(self, state_type: StateType, event_type: EventType):
         self.state_type = state_type
         self.event_type = event_type
         
@@ -169,20 +172,21 @@ class SettleState(StateBase):
         super().__init__(state_type, gameplay)
 
 class StateMachine:
-    def __init__(self):
+    def __init__(self, gameplay: Gameplay):
         self.transition_map = {}
         self.state_map = {}
+        self.gameplay = gameplay
         
-        self.start_state = StartState(StateType.START, self)
-        self.deal_cards_state = DealCardsState(StateType.DEAL_CARDS, self)
-        self.deal_to_flop_bet_state = DealToFlopBetState(StateType.DEAL_TO_FLOP_BET, self)
-        self.flop_cards_state = FlopCardsState(StateType.FLOP_CARDS, self)
-        self.flop_to_turn_bet_state = FlopToTurnBetState(StateType.FLOP_TO_TURN_BET, self)
-        self.turn_cards_state = TurnCardsState(StateType.TURN_CARDS, self)
-        self.turn_to_river_bet_state = TurnToRiverBetState(StateType.TURN_TO_RIVER_BET, self)
-        self.river_cards_state = RiverCardsState(StateType.RIVER_CARDS, self)
-        self.river_to_settle_bet_state = RiverToSettleBetState(StateType.RIVER_TO_SETTLE_BET, self)
-        self.settle_state = SettleState(StateType.SETTLE, self)
+        self.start_state = StartState(StateType.START, self.gameplay)
+        self.deal_cards_state = DealCardsState(StateType.DEAL_CARDS, self.gameplay)
+        self.deal_to_flop_bet_state = DealToFlopBetState(StateType.DEAL_TO_FLOP_BET, self.gameplay)
+        self.flop_cards_state = FlopCardsState(StateType.FLOP_CARDS, self.gameplay)
+        self.flop_to_turn_bet_state = FlopToTurnBetState(StateType.FLOP_TO_TURN_BET, self.gameplay)
+        self.turn_cards_state = TurnCardsState(StateType.TURN_CARDS, self.gameplay)
+        self.turn_to_river_bet_state = TurnToRiverBetState(StateType.TURN_TO_RIVER_BET, self.gameplay)
+        self.river_cards_state = RiverCardsState(StateType.RIVER_CARDS, self.gameplay)
+        self.river_to_settle_bet_state = RiverToSettleBetState(StateType.RIVER_TO_SETTLE_BET, self.gameplay)
+        self.settle_state = SettleState(StateType.SETTLE, self.gameplay)
     
     def init_state_machine(self):
         self.transition_map[Transition(StateType.START, EventType.START_GAMEPLAY)] = StateType.DEAL_CARDS
@@ -207,29 +211,31 @@ class StateMachine:
         self.state_map[StateType.SETTLE] = self.settle_state
     
     # 获取状态机的下一个状态
-    def get_next_state(self, state_type, event_type):
+    def get_next_state(self, state_type: StateType, event_type: EventType):
         return self.transition_map[Transition(state_type, event_type)]
     
     # 获取某个状态
-    def get_state(self, state_type):
+    def get_state(self, state_type: StateType):
         return self.state_map[state_type]
     
     # tick
-    def update(self, gameplay):
-        cur_state = self.get_state(gameplay.cur_state)
+    def update(self):
+        if self.gameplay.cur_state == StateType.INVALID:
+            return
+        cur_state = self.get_state(self.gameplay.cur_state)
         return cur_state.on_update()
     
     # 处理事件
-    def process_event(self, gameplay, event):
-        cur_state = self.get_state(gameplay.cur_state)
+    def process_event(self, event: EventType):
+        cur_state = self.get_state(self.gameplay.cur_state)
         result = cur_state.on_event(event)
         if result == EventResult.NO_NEED_CHANGE:
             return
-        next_state = self.get_next_state(gameplay.cur_state, event.event_type)
+        next_state = self.get_next_state(self.gameplay.cur_state, event.event_type)
         # 退出当前状态
         cur_state.on_exit()
         # 扭转状态
-        gameplay.cur_state = next_state
+        self.gameplay.cur_state = next_state
         # 进入下一个状态
         self.get_state(next_state).on_enter()
 
@@ -249,14 +255,14 @@ class Gameplay:
         
         # 状态机 不考虑中途加入玩家 要玩就玩到底的那种
         # start -> deal cards -> bet -> flop -> bet -> turn -> bet -> river -> bet -> settle -> start ...
-        self.state_machine = StateMachine()
+        self.state_machine = StateMachine(self)
         self.state_machine.init_state_machine()
         self.cur_state = StateType.INVALID
         self.event_queue = []
         
     # 主循环tick
     def update(self):
-        return self.state_machine.update(self)
+        return self.state_machine.update()
     
     # 处理事件
     def process_event(self, event):
@@ -268,17 +274,17 @@ class Gameplay:
             return
         while len(self.event_queue) > 0:
             event = self.event_queue[0]
-            self.state_machine.process_event(self, event)
+            self.state_machine.process_event(event)
             self.event_queue = self.event_queue[1:]
     
     # 初始状态启动
     def set_start_state(self):
+        self.init_gameplay()
+
         self.cur_state = StateType.START
         self.process_event(Event(EventType.START_GAMEPLAY))
     
     def start(self):
-        print("gameplay start")
-        self.set_start_state()
         while True:
             start_time = time.time()
             self.update()
@@ -310,9 +316,10 @@ class Gameplay:
         return self.all_cards[index]
     
     # 加入玩家 
-    def join_player(self, name, initial_chips):
+    def join_player(self, uid, name, initial_chips):
         player = Player(name, initial_chips, self)
         self.players.append(player)
+        print(f"join player uid:{uid} name:{name} initial chips:{initial_chips}")
     
     # 给玩家发手牌
     def deal_card_to_players(self):
@@ -326,6 +333,8 @@ class Gameplay:
     
     # 翻牌
     def flop_card(self):
+        # 翻牌前过掉一张
+        self.next_card_index += 1
         for i in range(3):
             self.flop_cards_index.append(self.next_card_index)
             self.next_card_index += 1
@@ -335,12 +344,16 @@ class Gameplay:
     
     # 转牌     
     def turn_card(self):
+        # 转牌前过掉一张
+        self.next_card_index += 1
         self.turn_card_index = self.next_card_index
         self.next_card_index += 1
         print("turn card ", self.get_card(self.turn_card_index))
     
     # 河牌
     def river_card(self):
+        # 河牌前过掉一张
+        self.next_card_index += 1
         self.river_card_index = self.next_card_index
         self.next_card_index += 1
         print("river card ", self.get_card(self.river_card_index))

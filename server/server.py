@@ -17,14 +17,22 @@ import time
 from gameplay import Gameplay
 
 class CSServicer(cs_pb2_grpc.CSServicer):
-    def __init__(self, gameplay):
-        self.db = {}
+    def __init__(self, gameplay: Gameplay):
         self.gameplay = gameplay
     
-    def Hello(self, req, context):
-        print("recv message:", req.message)
-        self.gameplay.process_event(Event(EventType.PLAYER_BET))
-        return cs_pb2.CSHelloRsp(message=req.message)
+    def Heartbeat(self, request, context):
+        # print("recv message:", request)
+        return cs_pb2.CSResHeartbeat()
+    
+    def JoinPlayer(self, request: cs_pb2.CSReqJoinPlayer, context):
+        # print("recv message:", request)
+        self.gameplay.join_player(request.uid, request.name, request.chips)
+        return cs_pb2.CSResJoinPlayer()
+    
+    def StartGameplay(self, request: cs_pb2.CSReqStartGameplay, context):
+        # print("recv message:", request)
+        self.gameplay.set_start_state()
+        return cs_pb2.CSResStartGameplay()
 
 def run_server(gameplay, port=50051):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
@@ -48,23 +56,12 @@ def main():
     try:
         grpc_thread = threading.Thread(target=run_server, args=(gameplay,), daemon=True)
         grpc_thread.start()
-        
+
         gameplay.start()
     except KeyboardInterrupt:
         print("keyboard interrupt")
     finally:
         gameplay.stop()
-        
-    # gameplay.join_player("player1", 1000)
-    # gameplay.join_player("player2", 1000)
-    # gameplay.join_player("player3", 1000)
-    
-    # gameplay.init_gameplay()
-    # gameplay.flop_card()
-    # gameplay.turn_card()
-    # gameplay.river_card()
-    
-    # server.wait_for_termination()
 
 
 if __name__ == "__main__":
