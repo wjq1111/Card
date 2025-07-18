@@ -37,10 +37,11 @@ class Event():
         self.event_type = event_type
 
 class StateBase:
-    def __init__(self, state_type):
+    def __init__(self, state_type, gameplay):
         self.state_type = state_type # 状态类型
         self.enter_timestamp = time.time() # 进入这个状态的时间
-        self.timeout_time = 60 # 多长时间超时
+        self.timeout_time = 600000 # 多长时间超时
+        self.gameplay = gameplay
     
     # 进入状态
     def on_enter(self):
@@ -48,14 +49,11 @@ class StateBase:
 
     # 处理事件
     def on_event(self, event):
-        if event.event_type != EventType.INVALID:
-            return EventResult.NEED_CHANGE
-        else:
-            return EventResult.NO_NEED_CHANGE
+        return EventResult.NO_NEED_CHANGE
     
     # tick
     def on_update(self):
-        if self.enter_timestamp + self.timeout_time >= time.time():
+        if self.enter_timestamp + self.timeout_time <= time.time():
             # 超时事件
             print("time out")
 
@@ -109,8 +107,8 @@ class Transition:
         return str(value)
         
 class StartState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
         
     def on_enter(self):
         print("enter start state")
@@ -118,67 +116,73 @@ class StartState(StateBase):
     
     def on_event(self, event):
         print("start state on event", event.event_type)
+        if event.event_type == EventType.START_GAMEPLAY:
+            return EventResult.NEED_CHANGE
         return super().on_event(event)
         
 class DealCardsState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
         
     def on_enter(self):
         print("enter deal cards state")
+        self.gameplay.deal_card_to_players()
+        self.gameplay.process_event(Event(EventType.DEAL_CARDS_DONE))
         return super().on_enter()
     
     def on_event(self, event):
         print("deal cards state on event", event.event_type)
+        if event.event_type == EventType.DEAL_CARDS_DONE:
+            return EventResult.NEED_CHANGE
         return super().on_event(event)
         
 class DealToFlopBetState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
         
 class FlopCardsState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class FlopToTurnBetState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class TurnCardsState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class TurnToRiverBetState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class RiverCardsState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class RiverToSettleBetState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class SettleState(StateBase):
-    def __init__(self, state_type):
-        super().__init__(state_type)
+    def __init__(self, state_type, gameplay):
+        super().__init__(state_type, gameplay)
 
 class StateMachine:
     def __init__(self):
         self.transition_map = {}
         self.state_map = {}
         
-        self.start_state = StartState(StateType.START)
-        self.deal_cards_state = DealCardsState(StateType.DEAL_CARDS)
-        self.deal_to_flop_bet_state = DealToFlopBetState(StateType.DEAL_TO_FLOP_BET)
-        self.flop_cards_state = FlopCardsState(StateType.FLOP_CARDS)
-        self.flop_to_turn_bet_state = FlopToTurnBetState(StateType.FLOP_TO_TURN_BET)
-        self.turn_cards_state = TurnCardsState(StateType.TURN_CARDS)
-        self.turn_to_river_bet_state = TurnToRiverBetState(StateType.TURN_TO_RIVER_BET)
-        self.river_cards_state = RiverCardsState(StateType.RIVER_CARDS)
-        self.river_to_settle_bet_state = RiverToSettleBetState(StateType.RIVER_TO_SETTLE_BET)
-        self.settle_state = SettleState(StateType.SETTLE)
+        self.start_state = StartState(StateType.START, self)
+        self.deal_cards_state = DealCardsState(StateType.DEAL_CARDS, self)
+        self.deal_to_flop_bet_state = DealToFlopBetState(StateType.DEAL_TO_FLOP_BET, self)
+        self.flop_cards_state = FlopCardsState(StateType.FLOP_CARDS, self)
+        self.flop_to_turn_bet_state = FlopToTurnBetState(StateType.FLOP_TO_TURN_BET, self)
+        self.turn_cards_state = TurnCardsState(StateType.TURN_CARDS, self)
+        self.turn_to_river_bet_state = TurnToRiverBetState(StateType.TURN_TO_RIVER_BET, self)
+        self.river_cards_state = RiverCardsState(StateType.RIVER_CARDS, self)
+        self.river_to_settle_bet_state = RiverToSettleBetState(StateType.RIVER_TO_SETTLE_BET, self)
+        self.settle_state = SettleState(StateType.SETTLE, self)
     
     def init_state_machine(self):
         self.transition_map[Transition(StateType.START, EventType.START_GAMEPLAY)] = StateType.DEAL_CARDS

@@ -7,6 +7,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from proto import cs_pb2
 from proto import cs_pb2_grpc
+from gameplay import Event
+from gameplay import EventType
 
 from concurrent import futures
 import threading
@@ -15,16 +17,18 @@ import time
 from gameplay import Gameplay
 
 class CSServicer(cs_pb2_grpc.CSServicer):
-    def __init__(self):
+    def __init__(self, gameplay):
         self.db = {}
+        self.gameplay = gameplay
     
     def Hello(self, req, context):
         print("recv message:", req.message)
+        self.gameplay.process_event(Event(EventType.PLAYER_BET))
         return cs_pb2.CSHelloRsp(message=req.message)
 
 def run_server(gameplay, port=50051):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    cs_pb2_grpc.add_CSServicer_to_server(CSServicer(), server)
+    cs_pb2_grpc.add_CSServicer_to_server(CSServicer(gameplay), server)
     server.add_insecure_port(f"[::]:{port}")
     server.start()
     print("server start at", port)
