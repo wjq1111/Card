@@ -1,243 +1,20 @@
+import random
+import time
+import grpc
+
 from card import Card
 from card import Suit
 from player import Player
+from enum_const import EventType
+from enum_const import EventResult
+from enum_const import StateType
+from enum_const import ErrorCode
 
-import random
-import time
-from enum import Enum
+from event import Event
+from proto import cs_pb2
+from proto import cs_pb2_grpc
 
-class StateType(Enum):
-    INVALID = 0
-    START = 1
-    DEAL_CARDS = 2
-    DEAL_TO_FLOP_BET = 3
-    FLOP_CARDS = 4
-    FLOP_TO_TURN_BET = 5
-    TURN_CARDS = 6
-    TURN_TO_RIVER_BET = 7
-    RIVER_CARDS = 7
-    RIVER_TO_SETTLE_BET = 8
-    SETTLE = 9
-
-class EventResult(Enum):
-    NO_NEED_CHANGE = 0
-    NEED_CHANGE = 1
-
-class EventType(Enum):
-    INVALID = 0
-    START_GAMEPLAY = 1
-    DEAL_CARDS_DONE = 2 # 初始发牌完成
-    FLOP_CARDS_DONE = 3 # 翻牌发牌完成
-    TURN_CARDS_DONE = 4 # 转牌发牌完成
-    RIVER_CARDS_DONE = 5 # 河牌发牌完成
-    PLAYER_BET = 6 # 玩家下注
-
-class Event():
-    def __init__(self, event_type: EventType):
-        self.event_type = event_type
-
-class Gameplay:
-    pass
-
-class StateBase:
-    def __init__(self, state_type: StateType, gameplay: Gameplay):
-        self.state_type = state_type # 状态类型
-        self.enter_timestamp = time.time() # 进入这个状态的时间
-        self.timeout_time = 600000 # 多长时间超时
-        self.gameplay = gameplay
-    
-    # 进入状态
-    def on_enter(self):
-        return
-
-    # 处理事件
-    def on_event(self, event):
-        return EventResult.NO_NEED_CHANGE
-    
-    # tick
-    def on_update(self):
-        if self.enter_timestamp + self.timeout_time <= time.time():
-            # 超时事件
-            print("time out")
-
-    # 错误
-    def on_error(self):
-        return
-    
-    # 退出状态    
-    def on_exit(self):
-        return
-
-class Transition:
-    def __init__(self, state_type: StateType, event_type: EventType):
-        self.state_type = state_type
-        self.event_type = event_type
-        
-    def __hash__(self):
-        state_hash = self._get_hashable(self.state_type)
-        event_hash = self._get_hashable(self.event_type)
-        return hash((state_hash, event_hash))
-    
-    def __eq__(self, other):
-        if not isinstance(other, Transition):
-            return False
-        return (
-            self._are_equal(self.state_type, other.state_type) and
-            self._are_equal(self.event_type, other.event_type)
-        )
-    
-    def __repr__(self):
-        state_str = self._enum_to_str(self.state_type)
-        event_str = self._enum_to_str(self.event_type)
-        return f"Transition(state={state_str}, event={event_str})"
-    
-    def _get_hashable(self, value):
-        if isinstance(value, Enum):
-            return value.name
-        return value
-    
-    def _are_equal(self, value1, value2):
-        try:
-            return value1 == value2
-        except Exception:
-            return False
-    
-    def _enum_to_str(self, value):
-        if hasattr(value, 'name'):
-            return value.name
-        elif hasattr(value, 'value'):
-            return value.value
-        return str(value)
-        
-class StartState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-        
-    def on_enter(self):
-        print("enter start state")
-        return super().on_enter()
-    
-    def on_event(self, event):
-        print("start state on event", event.event_type)
-        if event.event_type == EventType.START_GAMEPLAY:
-            return EventResult.NEED_CHANGE
-        return super().on_event(event)
-        
-class DealCardsState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-        
-    def on_enter(self):
-        print("enter deal cards state")
-        self.gameplay.deal_card_to_players()
-        self.gameplay.process_event(Event(EventType.DEAL_CARDS_DONE))
-        return super().on_enter()
-    
-    def on_event(self, event):
-        print("deal cards state on event", event.event_type)
-        if event.event_type == EventType.DEAL_CARDS_DONE:
-            return EventResult.NEED_CHANGE
-        return super().on_event(event)
-        
-class DealToFlopBetState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-        
-class FlopCardsState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class FlopToTurnBetState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class TurnCardsState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class TurnToRiverBetState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class RiverCardsState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class RiverToSettleBetState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class SettleState(StateBase):
-    def __init__(self, state_type, gameplay):
-        super().__init__(state_type, gameplay)
-
-class StateMachine:
-    def __init__(self, gameplay: Gameplay):
-        self.transition_map = {}
-        self.state_map = {}
-        self.gameplay = gameplay
-        
-        self.start_state = StartState(StateType.START, self.gameplay)
-        self.deal_cards_state = DealCardsState(StateType.DEAL_CARDS, self.gameplay)
-        self.deal_to_flop_bet_state = DealToFlopBetState(StateType.DEAL_TO_FLOP_BET, self.gameplay)
-        self.flop_cards_state = FlopCardsState(StateType.FLOP_CARDS, self.gameplay)
-        self.flop_to_turn_bet_state = FlopToTurnBetState(StateType.FLOP_TO_TURN_BET, self.gameplay)
-        self.turn_cards_state = TurnCardsState(StateType.TURN_CARDS, self.gameplay)
-        self.turn_to_river_bet_state = TurnToRiverBetState(StateType.TURN_TO_RIVER_BET, self.gameplay)
-        self.river_cards_state = RiverCardsState(StateType.RIVER_CARDS, self.gameplay)
-        self.river_to_settle_bet_state = RiverToSettleBetState(StateType.RIVER_TO_SETTLE_BET, self.gameplay)
-        self.settle_state = SettleState(StateType.SETTLE, self.gameplay)
-    
-    def init_state_machine(self):
-        self.transition_map[Transition(StateType.START, EventType.START_GAMEPLAY)] = StateType.DEAL_CARDS
-        self.transition_map[Transition(StateType.DEAL_CARDS, EventType.DEAL_CARDS_DONE)] = StateType.DEAL_TO_FLOP_BET
-        self.transition_map[Transition(StateType.DEAL_TO_FLOP_BET, EventType.PLAYER_BET)] = StateType.FLOP_CARDS
-        self.transition_map[Transition(StateType.FLOP_CARDS, EventType.FLOP_CARDS_DONE)] = StateType.FLOP_TO_TURN_BET
-        self.transition_map[Transition(StateType.FLOP_TO_TURN_BET, EventType.PLAYER_BET)] = StateType.TURN_CARDS
-        self.transition_map[Transition(StateType.TURN_CARDS, EventType.TURN_CARDS_DONE)] = StateType.TURN_TO_RIVER_BET
-        self.transition_map[Transition(StateType.TURN_TO_RIVER_BET, EventType.PLAYER_BET)] = StateType.RIVER_CARDS
-        self.transition_map[Transition(StateType.RIVER_CARDS, EventType.RIVER_CARDS_DONE)] = StateType.RIVER_TO_SETTLE_BET
-        self.transition_map[Transition(StateType.RIVER_TO_SETTLE_BET, EventType.PLAYER_BET)] = StateType.SETTLE
-        
-        self.state_map[StateType.START] = self.start_state
-        self.state_map[StateType.DEAL_CARDS] = self.deal_cards_state
-        self.state_map[StateType.DEAL_TO_FLOP_BET] = self.deal_to_flop_bet_state
-        self.state_map[StateType.FLOP_CARDS] = self.flop_cards_state
-        self.state_map[StateType.FLOP_TO_TURN_BET] = self.flop_to_turn_bet_state
-        self.state_map[StateType.TURN_CARDS] = self.turn_cards_state
-        self.state_map[StateType.TURN_TO_RIVER_BET] = self.turn_to_river_bet_state
-        self.state_map[StateType.RIVER_CARDS] = self.river_cards_state
-        self.state_map[StateType.RIVER_TO_SETTLE_BET] = self.river_to_settle_bet_state
-        self.state_map[StateType.SETTLE] = self.settle_state
-    
-    # 获取状态机的下一个状态
-    def get_next_state(self, state_type: StateType, event_type: EventType):
-        return self.transition_map[Transition(state_type, event_type)]
-    
-    # 获取某个状态
-    def get_state(self, state_type: StateType):
-        return self.state_map[state_type]
-    
-    # tick
-    def update(self):
-        if self.gameplay.cur_state == StateType.INVALID:
-            return
-        cur_state = self.get_state(self.gameplay.cur_state)
-        return cur_state.on_update()
-    
-    # 处理事件
-    def process_event(self, event: EventType):
-        cur_state = self.get_state(self.gameplay.cur_state)
-        result = cur_state.on_event(event)
-        if result == EventResult.NO_NEED_CHANGE:
-            return
-        next_state = self.get_next_state(self.gameplay.cur_state, event.event_type)
-        # 退出当前状态
-        cur_state.on_exit()
-        # 扭转状态
-        self.gameplay.cur_state = next_state
-        # 进入下一个状态
-        self.get_state(next_state).on_enter()
+from fsm import StateMachine
 
 # 一整个牌局的信息都记录在这里
 class Gameplay:
@@ -250,7 +27,10 @@ class Gameplay:
         self.river_card_index = 0 # 河牌 存牌的下标
         self.total_chips = 0 # 所有已经下注的筹码
         self.button_player_index = 0 # 庄家的玩家下标
-        self.current_action_player_index = 0 # 现在该谁行动的下标
+        self.current_action_player_index = self.button_player_index # 现在该谁行动的下标 一开始默认是庄家
+        self.current_min_bet = 0 # 当前最小下注
+        self.current_actioned_players = [] # 当前行动过的玩家
+        
         self.tick_rate = 1 # tick 30fps
         
         # 状态机 不考虑中途加入玩家 要玩就玩到底的那种
@@ -259,6 +39,9 @@ class Gameplay:
         self.state_machine.init_state_machine()
         self.cur_state = StateType.INVALID
         self.event_queue = []
+        
+        # 通信层
+        self.addr = {}
         
     # 主循环tick
     def update(self):
@@ -279,6 +62,8 @@ class Gameplay:
     
     # 初始状态启动
     def set_start_state(self):
+        if len(self.players) < 2:
+            return
         self.init_gameplay()
 
         self.cur_state = StateType.START
@@ -316,21 +101,84 @@ class Gameplay:
         return self.all_cards[index]
     
     # 加入玩家 
-    def join_player(self, uid, name, initial_chips):
-        player = Player(name, initial_chips, self)
+    def join_player(self, uid, name, initial_chips, ip, port):
+        player = Player(uid, name, initial_chips, self)
         self.players.append(player)
-        print(f"join player uid:{uid} name:{name} initial chips:{initial_chips}")
+        
+        self.addr[uid] = ip + ":" + str(port)
+        print(f"join player uid:{uid} name:{name} initial chips:{initial_chips} ip:{ip} port:{port}")
+    
+    def set_next_action_player(self):
+        self.current_action_player_index += 1
+        self.current_action_player_index = self.current_action_player_index % len(self.players)
     
     # 给玩家发手牌
-    def deal_card_to_players(self):
+    def enter_deal_cards_state(self):
         for player in self.players:
             for i in range(2):
                 player.add_card(self.next_card_index)
                 self.next_card_index += 1
-        
         for player in self.players:
             print(player)
+        self.process_event(Event(EventType.DEAL_CARDS_DONE))
+        
+    # 进入翻牌后下注
+    def enter_deal_to_flop_bet_state(self):
+        # 如果牌局大于2人，庄家下一位和下两位需要下注10，20，而后轮流询问（后续至少需要call 20）
+        # 如果牌局只有2人，庄家下一位下注10，而后直接轮流询问（庄家需要call至少20）
+        if len(self.players) < 2:
+            exit(0)
+        # 开局自动跳一个
+        self.set_next_action_player()
+        self.current_min_bet = 20
+        if len(self.players) == 2:
+            self.players[self.current_action_player_index].set_bet(10)
+            self.set_next_action_player()
+        else:
+            self.players[self.current_action_player_index].set_bet(10)
+            self.set_next_action_player()
+            self.players[self.current_action_player_index].set_bet(20)
+            self.set_next_action_player()
+
+        self.sync_gameplay()
+
+    # 是否所有人都下注完了
+    def is_all_player_bet_done(self):
+        if len(self.current_actioned_players) == len(self.players):
+            return True
+        return False
+
+    # 翻牌后下注阶段更新
+    def update_deal_to_flop_bet_state(self):
+        pass
     
+    # 玩家call注
+    def player_call(self, uid):
+        if self.players[self.current_action_player_index].uid != uid:
+            print(f"not this player turn {uid}")
+            return ErrorCode.NOT_THIS_PLAYER_TURN
+        if self.players[self.current_action_player_index].chips <= self.current_min_bet:
+            print(f"not enough chips {uid} {self.players[self.current_action_player_index].chips}")
+            return ErrorCode.NOT_ENOUGH_CHIPS
+        # call的数量是当前每个人最小的赌注-当前的赌注
+        self.players[self.current_action_player_index].call(self.players[self.current_action_player_index].current_bet-self.current_min_bet)
+        self.current_actioned_players.append(uid)
+        self.process_event(Event(EventType.PLAYER_BET))
+        self.set_next_action_player()
+        
+    # 玩家check
+    def player_check(self, uid):
+        if self.players[self.current_action_player_index].uid != uid:
+            print(f"not this player turn {uid}")
+            return ErrorCode.NOT_THIS_PLAYER_TURN
+        if self.players[self.current_action_player_index].current_bet != self.current_min_bet:
+            print(f"can't check card, should fold or call")
+            return ErrorCode.CAN_NOT_CHECK_CARD
+        self.players[self.current_action_player_index].check()
+        self.current_actioned_players.append(uid)
+        self.process_event(Event(EventType.PLAYER_BET))
+        self.set_next_action_player()
+
     # 翻牌
     def flop_card(self):
         # 翻牌前过掉一张
@@ -361,3 +209,27 @@ class Gameplay:
     # 比大小
     def compare(self):
         return
+    
+    # cs交互代码
+    def to_CSGameplay(self):
+        player_list = []
+        for i in range(len(self.players)):
+            p = cs_pb2.CSGameplay.Player(uid=self.players[i].uid, index=i)
+            player_list.append(p)
+        
+        return cs_pb2.CSGameplay(
+            button_player_index=self.button_player_index,
+            players=player_list
+        )
+    
+    # 同步所有人
+    def sync_gameplay(self):
+        for uid in self.addr:
+            channel = grpc.insecure_channel(self.addr[uid])
+            stub = cs_pb2_grpc.SCStub(channel)
+            stub.SyncGameplay(cs_pb2.CSReqSyncGameplay(
+                uid=uid,
+                gameplay=self.to_CSGameplay()
+            ))
+            print("sync gameplay to", uid)
+        

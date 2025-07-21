@@ -1,5 +1,6 @@
 class Player:
-    def __init__(self, name, initial_chips, gameplay):
+    def __init__(self, uid, name, initial_chips, gameplay):
+        self.uid = uid
         self.name = name
         self.hand_card = []  # 玩家手牌
         self.chips = initial_chips  # 当前筹码数
@@ -32,7 +33,6 @@ class Player:
             print(f"{self.name} already folded")
             return False
         self.folded = True
-        self.current_bet = 0
         print(f"{self.name} fold")
         return True
     
@@ -76,3 +76,11 @@ class Player:
         
         print(f"{self.name} call {actual_call}, current bet {self.current_bet}, rest chip {self.chips}")
         return actual_call
+
+    # 普通下注，应对于小盲注和大盲注
+    def set_bet(self, count):
+        self.chips -= count
+        self.current_bet += count
+        
+        print(f"{self.name} bet {count}, current bet {self.current_bet}, rest chip {self.chips}")
+        return count

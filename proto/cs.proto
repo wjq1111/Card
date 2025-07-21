@@ -4,16 +4,23 @@ package pb;
 
 
 service CS {
-    // 正常的grpc是通过stream流来实现服务器主动推送消息到客户端的，建立一个长期的连接，服务器通过这个连接发送消息
-    // 但是没必要，做一个心跳包保活，同步实时的单局信息即可
-    // 心跳
-    rpc Heartbeat(CSReqHeartbeat) returns (CSResHeartbeat) {}
-
     // 加入对局
     rpc JoinPlayer(CSReqJoinPlayer) returns (CSResJoinPlayer) {}
-
     // 开始对局
     rpc StartGameplay(CSReqStartGameplay) returns (CSResStartGameplay) {}
+    // call
+    rpc Call(CSReqCall) returns (CSResCall) {}
+    // raise
+    rpc Raise(CSReqRaise) returns (CSResRaise) {}
+    // fold
+    rpc Fold(CSReqFold) returns (CSResFold) {}
+    // check
+    rpc Check(CSReqCheck) returns (CSResCheck) {}
+}
+
+service SC {
+    // 同步单局信息
+    rpc SyncGameplay(CSReqSyncGameplay) returns (CSResSyncGameplay) {}
 }
 
 message CSGameplay {
@@ -26,18 +33,19 @@ message CSGameplay {
     }
 }
 
-message CSReqHeartbeat {
+message CSReqSyncGameplay {
     uint64 uid = 1; // 玩家id
+    CSGameplay gameplay = 2;
 }
 
-message CSResHeartbeat {
-    CSGameplay gameplay = 1;
-}
+message CSResSyncGameplay {}
 
 message CSReqJoinPlayer {
     uint64 uid = 1; // 玩家id
     string name = 2; // 名字
     int64 chips = 3; // 自己的筹码
+    string ip = 5; // 自己的ip
+    uint32 port = 4; // 自己的端口
 }
 
 message CSResJoinPlayer {}
@@ -47,3 +55,27 @@ message CSReqStartGameplay {
 }
 
 message CSResStartGameplay {}
+
+message CSReqCall {
+    uint64 uid = 1; // 玩家id
+}
+
+message CSResCall {}
+
+message CSReqCheck {
+    uint64 uid = 1; // 玩家id
+}
+
+message CSResCheck {}
+
+message CSReqFold {
+    uint64 uid = 1; // 玩家id
+}
+
+message CSResFold {}
+
+message CSReqRaise {
+    uint64 uid = 1; // 玩家id
+}
+
+message CSResRaise {}
