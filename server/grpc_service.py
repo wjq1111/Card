@@ -10,6 +10,7 @@ import uuid
 import grpc
 
 from proto_gen import poker_pb2, poker_pb2_grpc
+from server.chip_store import PlayerChipStore
 from server.room import PokerRoom, RoomStatus
 from shared.cards import Card
 from shared.game_logging import GameLogStore
@@ -23,8 +24,10 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.reconnect_tokens: dict[str, str] = {}
         self.player_names: dict[str, str] = {}
         self.player_locations: dict[str, str] = {}
+        self.player_chip_balances: dict[str, int] = {}
         self.lock = threading.RLock()
         self.server_logs = GameLogStore("runtime_logs", "server", "rooms")
+        self.chip_store = PlayerChipStore("runtime_logs/player_chips.json")
         self._ticker = threading.Thread(target=self._room_loop, daemon=True)
         self._ticker.start()
 
@@ -104,7 +107,9 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         name = event.login.name.strip()
         if not name:
             raise ValueError("Player name is required")
+        chips = self.chip_store.get_or_create(name)
         self.player_names[player_id] = name
+        self.player_chip_balances[player_id] = chips
         self.reconnect_tokens[player_id] = reconnect_token
         self.player_locations[player_id] = ""
         self.lobby_subscribers[player_id] = outgoing
@@ -144,7 +149,13 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
 
     def create_room_for_player(self, player_id: str, display_name: str) -> str:
         room_id = self.generate_room_id()
-        room = PokerRoom(room_id, display_name=display_name.strip() or room_id, logger=self.server_logs.with_owner(room_id))
+        room = PokerRoom(
+            room_id,
+            display_name=display_name.strip() or room_id,
+            logger=self.server_logs.with_owner(room_id),
+            chip_resolver=self.resolve_player_chips,
+            chip_persistor=self.persist_player_chips,
+        )
         self.rooms[room_id] = room
         self.broadcast_lobby()
         return room_id
@@ -230,6 +241,13 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             room.player_move(player_id, poker_pb2.MoveType.Name(event.player_move.type), event.player_move.amount)
         elif payload == "chat_message":
             room.log_line(f"{room.players.get(player_id, 'Player')}: {event.chat_message.text[:120]}")
+
+    def resolve_player_chips(self, player_id: str, player_name: str) -> int:
+        return self.player_chip_balances.get(player_id, self.chip_store.get_or_create(player_name))
+
+    def persist_player_chips(self, player_id: str, player_name: str, chips: int) -> None:
+        stored = self.chip_store.set_chips(player_name, chips)
+        self.player_chip_balances[player_id] = stored
 
     def _room_loop(self) -> None:
         while True:

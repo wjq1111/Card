@@ -2,6 +2,7 @@ import random
 import unittest
 from tempfile import TemporaryDirectory
 
+from server.chip_store import PlayerChipStore
 from shared.cards import Card
 from shared.game_logging import GameLogStore
 from server.room import Phase, PokerRoom, RoomStatus
@@ -203,6 +204,55 @@ class RoomRulesTest(unittest.TestCase):
             hand_id = room.last_hand_summary.hand_id
             self.assertTrue(logger.room_log_path("test").exists())
             self.assertTrue(logger.hand_log_path("test", room.hand_number, hand_id).exists())
+
+    def test_sit_uses_resolved_chip_balance(self) -> None:
+        room = PokerRoom("test", chip_resolver=lambda _player_id, _name: 3456)
+        room.join("p1", "Alice")
+
+        room.sit("p1", 0)
+
+        self.assertEqual(room.seats[0].chips, 3456)
+
+    def test_stand_persists_player_balance(self) -> None:
+        persisted: list[tuple[str, str, int]] = []
+        room = PokerRoom("test", chip_persistor=lambda player_id, name, chips: persisted.append((player_id, name, chips)))
+        room.join("p1", "Alice")
+        room.sit("p1", 0)
+        room.seats[0].chips = 2780
+
+        room.stand("p1")
+
+        self.assertEqual(persisted, [("p1", "Alice", 2780)])
+
+    def test_finished_hand_persists_all_seated_balances(self) -> None:
+        persisted: list[tuple[str, str, int]] = []
+        room = PokerRoom("test", rng=random.Random(0), chip_persistor=lambda player_id, name, chips: persisted.append((player_id, name, chips)))
+        room.join("p1", "Alice")
+        room.join("p2", "Bob")
+        room.sit("p1", 0)
+        room.sit("p2", 1)
+        room.set_ready("p1", True)
+        room.set_ready("p2", True)
+        room.start_hand()
+
+        room.player_move(room.seats[room.active_seat].player_id, "FOLD")
+
+        self.assertEqual(len(persisted), 2)
+        self.assertEqual({row[0] for row in persisted}, {"p1", "p2"})
+
+
+class PlayerChipStoreTest(unittest.TestCase):
+    def test_store_creates_and_updates_balances(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            store = PlayerChipStore(f"{temp_dir}/player_chips.json")
+
+            created = store.get_or_create("Alice")
+            updated = store.add_chips("Alice", 500)
+            lowered = store.add_chips("Alice", -99999)
+
+            self.assertEqual(created, 2000)
+            self.assertEqual(updated, 2500)
+            self.assertEqual(lowered, 0)
 
 
 if __name__ == "__main__":

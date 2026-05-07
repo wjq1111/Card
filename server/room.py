@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import random
 import time
-from typing import Iterable
+from typing import Callable, Iterable
 
 from shared.cards import Card, shuffled_deck
 from shared.game_logging import GameLogStore, generate_hand_id
@@ -72,6 +72,8 @@ class PokerRoom:
         start_game_countdown: float = START_GAME_COUNTDOWN,
         hand_complete_pause: float = HAND_COMPLETE_PAUSE,
         rng: random.Random | None = None,
+        chip_resolver: Callable[[str, str], int] | None = None,
+        chip_persistor: Callable[[str, str, int], None] | None = None,
     ) -> None:
         self.room_id = room_id
         self.display_name = display_name or room_id
@@ -98,6 +100,8 @@ class PokerRoom:
         self.start_game_countdown = start_game_countdown
         self.hand_complete_pause = hand_complete_pause
         self.rng = rng or random.Random()
+        self.chip_resolver = chip_resolver
+        self.chip_persistor = chip_persistor
 
     def join(self, player_id: str, name: str) -> None:
         cleaned_name = name.strip() or "Player"
@@ -110,6 +114,7 @@ class PokerRoom:
         player_name = self.players.pop(player_id, "")
         seat = self.find_seat(player_id)
         if seat:
+            self.sync_player_chips(player_id, seat.chips)
             self.clear_seat(seat)
         if self.owner_player_id == player_id:
             self.owner_player_id = next(iter(self.players), "")
@@ -135,6 +140,7 @@ class PokerRoom:
             raise ValueError("Seat is occupied")
         seat.player_id = player_id
         seat.name = self.players[player_id]
+        seat.chips = self.initial_chips_for(player_id)
         seat.ready = False
         self.log_line(f"{seat.name} sat down at seat {seat.seat_index + 1}", event_type="SEAT")
 
@@ -143,6 +149,7 @@ class PokerRoom:
         seat = self.require_seat(player_id)
         self.clear_seat(seat)
         self.log_line(f"{self.players[player_id]} stood up", event_type="SEAT")
+        self.sync_player_chips(player_id, seat.chips)
 
     def change_seat(self, player_id: str, seat_index: int) -> None:
         self.assert_can_change_seat()
@@ -384,6 +391,7 @@ class PokerRoom:
             chip_deltas=self.chip_deltas(),
             final_stacks=self.final_stacks(),
         )
+        self.sync_all_player_chips()
         self.finish_hand()
 
     def resolve_showdown(self) -> None:
@@ -418,6 +426,7 @@ class PokerRoom:
                 hand_id=self.current_hand_id,
             )
         self.last_hand_summary = self.create_hand_summary(result)
+        self.sync_all_player_chips()
         self.finish_hand()
 
     def blind_seats(self, active: list[Seat]) -> tuple[int, int]:
@@ -466,6 +475,21 @@ class PokerRoom:
         seat.all_in = False
         seat.acted_this_round = False
         seat.chips = chips
+
+    def initial_chips_for(self, player_id: str) -> int:
+        if self.chip_resolver is None:
+            return STARTING_CHIPS
+        return max(0, int(self.chip_resolver(player_id, self.players[player_id])))
+
+    def sync_player_chips(self, player_id: str, chips: int) -> None:
+        if self.chip_persistor is None or player_id not in self.players:
+            return
+        self.chip_persistor(player_id, self.players[player_id], max(0, int(chips)))
+
+    def sync_all_player_chips(self) -> None:
+        for seat in self.seats:
+            if seat.player_id:
+                self.sync_player_chips(seat.player_id, seat.chips)
 
     def log_line(
         self,
