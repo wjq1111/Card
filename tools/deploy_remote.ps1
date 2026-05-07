@@ -6,7 +6,7 @@ param(
     [string]$RemotePath = "/root/TexasHoldemOnline",
     [string]$ServiceName = "texas-holdem",
     [string]$IdentityFile = "",
-    [string]$Password = "Wlhwjqjhy687300",
+    [string]$Password = "",
     [int]$ConnectTimeout = 10,
     [switch]$UsePasswordPrompt,
     [switch]$NoRestart
@@ -16,6 +16,10 @@ $ErrorActionPreference = "Stop"
 
 $target = "$User@$HostName"
 $restartMode = if ($NoRestart) { "no" } else { "yes" }
+
+if (-not $Password -and $env:TEXAS_HOLDEM_DEPLOY_PASSWORD) {
+    $Password = $env:TEXAS_HOLDEM_DEPLOY_PASSWORD
+}
 
 function Invoke-SshChecked {
     param(

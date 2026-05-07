@@ -11,7 +11,7 @@ The local deploy script clones the project into `/root/TexasHoldemOnline` on the
 The server needs:
 
 - SSH access from this machine
-- SSH key authentication for non-interactive deploys, or the embedded root password in `tools/deploy_remote.ps1`
+- SSH key authentication for non-interactive deploys, or a password supplied at runtime
 - `git`
 - `python3.11`
 - access to `https://github.com/wjq1111/Card.git`
@@ -30,7 +30,7 @@ This defaults to the `dev` branch. The underlying PowerShell command is:
 .\tools\deploy_remote.ps1 -User root -Branch dev
 ```
 
-The root password is currently embedded in `tools/deploy_remote.ps1`, so this command can run without typing the password each time. After resetting the server password, update the script's `Password` parameter default.
+If passwordless SSH is already configured, this command can run directly without extra flags.
 
 If the SSH user is not `root`, pass the correct user:
 
@@ -50,10 +50,17 @@ If you want the script to ask for the SSH password at runtime:
 .\tools\deploy_remote.ps1 -User root -Branch dev -UsePasswordPrompt
 ```
 
-You can also override the password without editing the script:
+You can also provide the password without editing the script:
 
 ```powershell
 .\tools\deploy_remote.ps1 -User root -Branch dev -Password "new-password"
+```
+
+Or set it through an environment variable:
+
+```powershell
+$env:TEXAS_HOLDEM_DEPLOY_PASSWORD = "new-password"
+.\tools\deploy_remote.ps1 -User root -Branch dev
 ```
 
 ## Deploy another branch
