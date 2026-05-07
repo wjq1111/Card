@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package poker;
+
+service PokerService {
+  rpc Play(stream ClientEvent) returns (stream ServerEvent);
+}
+
+message ClientEvent {
+  string player_id = 1;
+
+  oneof payload {
+    JoinRoom join_room = 2;
+    SitDown sit_down = 3;
+    StandUp stand_up = 4;
+    SetReady set_ready = 5;
+    StartHand start_hand = 6;
+    PlayerMove player_move = 7;
+  }
+}
+
+message JoinRoom {
+  string room_id = 1;
+  string name = 2;
+}
+
+message SitDown {
+  int32 seat_index = 1;
+}
+
+message StandUp {}
+
+message SetReady {
+  bool ready = 1;
+}
+
+message StartHand {}
+
+message PlayerMove {
+  MoveType type = 1;
+  int32 amount = 2;
+}
+
+message ServerEvent {
+  oneof payload {
+    Joined joined = 1;
+    RoomSnapshot snapshot = 2;
+    Error error = 3;
+  }
+}
+
+message Joined {
+  string player_id = 1;
+  string room_id = 2;
+}
+
+message Error {
+  string message = 1;
+}
+
+message RoomSnapshot {
+  string room_id = 1;
+  string hero_player_id = 2;
+  GamePhase phase = 3;
+  repeated Seat seats = 4;
+  repeated Card board = 5;
+  int32 pot = 6;
+  int32 current_bet = 7;
+  int32 min_raise = 8;
+  int32 dealer_seat = 9;
+  int32 active_seat = 10;
+  int32 hand_number = 11;
+  repeated Card hero_cards = 12;
+  repeated string log = 13;
+}
+
+message Seat {
+  int32 seat_index = 1;
+  string player_id = 2;
+  string name = 3;
+  int32 chips = 4;
+  int32 committed = 5;
+  bool folded = 6;
+  bool all_in = 7;
+  bool ready = 8;
+  bool is_dealer = 9;
+  bool is_turn = 10;
+  int32 hole_card_count = 11;
+}
+
+message Card {
+  Suit suit = 1;
+  Rank rank = 2;
+}
+
+enum Suit {
+  SUIT_UNSPECIFIED = 0;
+  CLUBS = 1;
+  DIAMONDS = 2;
+  HEARTS = 3;
+  SPADES = 4;
+}
+
+enum Rank {
+  RANK_UNSPECIFIED = 0;
+  TWO = 2;
+  THREE = 3;
+  FOUR = 4;
+  FIVE = 5;
+  SIX = 6;
+  SEVEN = 7;
+  EIGHT = 8;
+  NINE = 9;
+  TEN = 10;
+  JACK = 11;
+  QUEEN = 12;
+  KING = 13;
+  ACE = 14;
+}
+
+enum GamePhase {
+  GAME_PHASE_UNSPECIFIED = 0;
+  WAITING = 1;
+  PREFLOP = 2;
+  FLOP = 3;
+  TURN = 4;
+  RIVER = 5;
+  SHOWDOWN = 6;
+  HAND_COMPLETE = 7;
+}
+
+enum MoveType {
+  MOVE_TYPE_UNSPECIFIED = 0;
+  FOLD = 1;
+  CHECK = 2;
+  CALL = 3;
+  RAISE = 4;
+  ALL_IN = 5;
+}
