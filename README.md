@@ -39,7 +39,7 @@ python -m server.main
 python -m client.main
 ```
 
-默认连接 `localhost:50051`。
+默认连接 `119.45.157.13:50051`。
 
 ## 当前范围
 

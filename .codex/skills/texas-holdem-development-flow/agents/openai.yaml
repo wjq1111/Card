@@ -1,0 +1,4 @@
+interface:
+  display_name: "Texas Holdem Development Flow"
+  short_description: "Keep docs, code, tests, and checks aligned."
+  default_prompt: "Use -holdem-development-flow to implement this TexasHoldemOnline change with synced docs, tests, code, and self-validation."

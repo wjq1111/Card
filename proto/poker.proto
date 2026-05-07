@@ -8,6 +8,8 @@ service PokerService {
 
 message ClientEvent {
   string player_id = 1;
+  string request_id = 8;
+  string reconnect_token = 9;
 
   oneof payload {
     JoinRoom join_room = 2;
@@ -16,6 +18,9 @@ message ClientEvent {
     SetReady set_ready = 5;
     StartHand start_hand = 6;
     PlayerMove player_move = 7;
+    Heartbeat heartbeat = 10;
+    Reconnect reconnect = 11;
+    ChatMessage chat_message = 12;
   }
 }
 
@@ -41,21 +46,42 @@ message PlayerMove {
   int32 amount = 2;
 }
 
+message Heartbeat {}
+
+message Reconnect {
+  string player_id = 1;
+  string reconnect_token = 2;
+  string room_id = 3;
+}
+
+message ChatMessage {
+  string text = 1;
+}
+
 message ServerEvent {
+  string event_id = 10;
+  string request_id = 11;
+
   oneof payload {
     Joined joined = 1;
     RoomSnapshot snapshot = 2;
     Error error = 3;
+    PrivatePlayerState private_state = 4;
+    HandResult hand_result = 5;
+    ServerNotice server_notice = 6;
+    ChatMessage chat_message = 7;
   }
 }
 
 message Joined {
   string player_id = 1;
   string room_id = 2;
+  string reconnect_token = 3;
 }
 
 message Error {
-  string message = 1;
+  string code = 1;
+  string message = 2;
 }
 
 message RoomSnapshot {
@@ -72,6 +98,9 @@ message RoomSnapshot {
   int32 hand_number = 11;
   repeated Card hero_cards = 12;
   repeated string log = 13;
+  HandResult last_hand_result = 14;
+  string current_hand_id = 15;
+  int32 auto_start_countdown_seconds = 16;
 }
 
 message Seat {
@@ -86,6 +115,47 @@ message Seat {
   bool is_dealer = 9;
   bool is_turn = 10;
   int32 hole_card_count = 11;
+  int32 hand_committed = 12;
+  bool acted_this_round = 13;
+  bool is_offline = 14;
+}
+
+message PrivatePlayerState {
+  string player_id = 1;
+  repeated Card hole_cards = 2;
+  int32 seat_index = 3;
+}
+
+message PotAward {
+  int32 amount = 1;
+  repeated int32 winner_seats = 2;
+  repeated int32 eligible_seats = 3;
+}
+
+message ShownHand {
+  int32 seat_index = 1;
+  repeated Card cards = 2;
+  string hand_name = 3;
+}
+
+message ChipDelta {
+  int32 seat_index = 1;
+  int32 delta = 2;
+  int32 final_stack = 3;
+}
+
+message HandResult {
+  string hand_id = 7;
+  int32 hand_number = 1;
+  repeated Card board = 2;
+  repeated PotAward pot_awards = 3;
+  repeated int32 winner_seats = 4;
+  repeated ShownHand shown_hands = 5;
+  repeated ChipDelta chip_deltas = 6;
+}
+
+message ServerNotice {
+  string message = 1;
 }
 
 message Card {
