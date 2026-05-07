@@ -10,7 +10,7 @@ import uuid
 import grpc
 
 from proto_gen import poker_pb2, poker_pb2_grpc
-from server.room import PokerRoom
+from server.room import PokerRoom, RoomStatus
 from shared.cards import Card
 from shared.game_logging import GameLogStore
 
@@ -18,9 +18,11 @@ from shared.game_logging import GameLogStore
 class PokerService(poker_pb2_grpc.PokerServiceServicer):
     def __init__(self) -> None:
         self.rooms: dict[str, PokerRoom] = {}
-        self.subscribers: dict[str, list[tuple[str, Queue[poker_pb2.ServerEvent]]]] = defaultdict(list)
+        self.room_subscribers: dict[str, list[tuple[str, Queue[poker_pb2.ServerEvent]]]] = defaultdict(list)
+        self.lobby_subscribers: dict[str, Queue[poker_pb2.ServerEvent]] = {}
         self.reconnect_tokens: dict[str, str] = {}
-        self.player_rooms: dict[str, str] = {}
+        self.player_names: dict[str, str] = {}
+        self.player_locations: dict[str, str] = {}
         self.lock = threading.RLock()
         self.server_logs = GameLogStore("runtime_logs", "server", "rooms")
         self._ticker = threading.Thread(target=self._room_loop, daemon=True)
@@ -29,40 +31,19 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
     def Play(self, request_iterator, context):
         player_id = uuid.uuid4().hex
         reconnect_token = uuid.uuid4().hex
-        room_id = ""
         outgoing: Queue[poker_pb2.ServerEvent] = Queue()
 
         def consume_requests() -> None:
-            nonlocal player_id, reconnect_token, room_id
+            nonlocal player_id, reconnect_token
             try:
                 for event in request_iterator:
                     try:
                         with self.lock:
                             payload = event.WhichOneof("payload")
-                            if payload == "join_room":
-                                if event.player_id and self.reconnect_tokens.get(event.player_id) == event.reconnect_token:
-                                    player_id = event.player_id
-                                    reconnect_token = event.reconnect_token
-                                room_id = event.join_room.room_id.strip() or "lobby"
-                                room = self.get_room(room_id)
-                                room.join(player_id, event.join_room.name)
-                                self.reconnect_tokens[player_id] = reconnect_token
-                                self.player_rooms[player_id] = room_id
-                                self.subscribers[room_id].append((player_id, outgoing))
-                                outgoing.put(
-                                    self.server_event(
-                                        request_id=event.request_id,
-                                        joined=poker_pb2.Joined(
-                                            player_id=player_id,
-                                            room_id=room_id,
-                                            reconnect_token=reconnect_token,
-                                        ),
-                                    )
-                                )
-                                self.broadcast(room_id)
+                            if payload == "login":
+                                player_id, reconnect_token = self.handle_login(event, outgoing, player_id, reconnect_token)
                             elif payload == "reconnect":
-                                player_id, room_id, reconnect_token = self.handle_reconnect(event, outgoing)
-                                outgoing.put(self.snapshot_event(room_id, player_id, request_id=event.request_id))
+                                player_id, reconnect_token = self.handle_reconnect(event, outgoing)
                             elif payload == "heartbeat":
                                 outgoing.put(
                                     self.server_event(
@@ -70,11 +51,30 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
                                         server_notice=poker_pb2.ServerNotice(message="heartbeat_ack"),
                                     )
                                 )
-                            elif not room_id:
-                                raise ValueError("Join a room first")
-                            else:
+                            elif not self.is_logged_in(player_id):
+                                raise ValueError("Login first")
+                            elif payload == "list_rooms":
+                                outgoing.put(self.lobby_snapshot_event(player_id, request_id=event.request_id))
+                            elif payload == "create_room":
+                                room_id = self.create_room_for_player(player_id, event.create_room.display_name)
+                                self.join_player_to_room(player_id, room_id, outgoing)
+                                outgoing.put(self.server_event(request_id=event.request_id, joined=self.joined_payload(player_id, room_id)))
+                            elif payload == "join_room_by_id":
+                                room_id = event.join_room_by_id.room_id.strip()
+                                if not room_id:
+                                    raise ValueError("Room id is required")
+                                self.join_player_to_room(player_id, room_id, outgoing)
+                                outgoing.put(self.server_event(request_id=event.request_id, joined=self.joined_payload(player_id, room_id)))
+                            elif payload == "leave_room":
+                                self.leave_current_room(player_id, outgoing)
+                                outgoing.put(self.lobby_snapshot_event(player_id, request_id=event.request_id))
+                            elif payload in {"sit_down", "stand_up", "change_seat", "set_ready", "start_hand", "player_move", "chat_message"}:
+                                room_id = self.require_room_location(player_id)
                                 self.handle_room_event(player_id, room_id, event)
-                                self.broadcast(room_id)
+                                self.broadcast_room(room_id)
+                                self.broadcast_lobby()
+                            else:
+                                raise ValueError("Unsupported request")
                     except Exception as exc:
                         outgoing.put(
                             self.server_event(
@@ -84,32 +84,148 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
                         )
             finally:
                 with self.lock:
-                    if room_id:
-                        self.subscribers[room_id] = [
-                            subscriber for subscriber in self.subscribers[room_id] if subscriber[1] is not outgoing
-                        ]
+                    self.disconnect_player(player_id, outgoing)
 
         threading.Thread(target=consume_requests, daemon=True).start()
 
         while context.is_active():
             yield outgoing.get()
 
-    def get_room(self, room_id: str) -> PokerRoom:
-        if room_id not in self.rooms:
-            self.rooms[room_id] = PokerRoom(room_id, logger=self.server_logs.with_owner(room_id))
-        return self.rooms[room_id]
+    def handle_login(
+        self,
+        event: poker_pb2.ClientEvent,
+        outgoing: Queue[poker_pb2.ServerEvent],
+        player_id: str,
+        reconnect_token: str,
+    ) -> tuple[str, str]:
+        if event.player_id and self.reconnect_tokens.get(event.player_id) == event.reconnect_token:
+            player_id = event.player_id
+            reconnect_token = event.reconnect_token
+        name = event.login.name.strip()
+        if not name:
+            raise ValueError("Player name is required")
+        self.player_names[player_id] = name
+        self.reconnect_tokens[player_id] = reconnect_token
+        self.player_locations[player_id] = ""
+        self.lobby_subscribers[player_id] = outgoing
+        outgoing.put(
+            self.server_event(
+                request_id=event.request_id,
+                login_accepted=poker_pb2.LoginAccepted(
+                    player_id=player_id,
+                    player_name=name,
+                    reconnect_token=reconnect_token,
+                ),
+            )
+        )
+        outgoing.put(self.lobby_snapshot_event(player_id, request_id=event.request_id))
+        return player_id, reconnect_token
 
-    def handle_room_event(self, player_id: str, room_id: str, event) -> None:
-        room = self.get_room(room_id)
+    def handle_reconnect(
+        self,
+        event: poker_pb2.ClientEvent,
+        outgoing: Queue[poker_pb2.ServerEvent],
+    ) -> tuple[str, str]:
+        requested_player_id = event.reconnect.player_id or event.player_id
+        token = event.reconnect.reconnect_token or event.reconnect_token
+        if not requested_player_id or self.reconnect_tokens.get(requested_player_id) != token:
+            raise ValueError("Reconnect token is invalid")
+        self.lobby_subscribers[requested_player_id] = outgoing
+        location = self.player_locations.get(requested_player_id, "")
+        if location:
+            self.attach_room_subscriber(location, requested_player_id, outgoing)
+            outgoing.put(self.snapshot_event(location, requested_player_id, request_id=event.request_id))
+        else:
+            outgoing.put(self.lobby_snapshot_event(requested_player_id, request_id=event.request_id))
+        return requested_player_id, token
+
+    def is_logged_in(self, player_id: str) -> bool:
+        return player_id in self.player_names
+
+    def create_room_for_player(self, player_id: str, display_name: str) -> str:
+        room_id = self.generate_room_id()
+        room = PokerRoom(room_id, display_name=display_name.strip() or room_id, logger=self.server_logs.with_owner(room_id))
+        self.rooms[room_id] = room
+        self.broadcast_lobby()
+        return room_id
+
+    def generate_room_id(self) -> str:
+        while True:
+            room_id = f"room-{uuid.uuid4().hex[:6]}"
+            if room_id not in self.rooms:
+                return room_id
+
+    def join_player_to_room(self, player_id: str, room_id: str, outgoing: Queue[poker_pb2.ServerEvent]) -> None:
+        if room_id not in self.rooms:
+            raise ValueError("Room does not exist")
+        current_room_id = self.player_locations.get(player_id, "")
+        if current_room_id == room_id:
+            return
+        if current_room_id:
+            self.remove_player_from_room(player_id, current_room_id)
+        room = self.rooms[room_id]
+        room.join(player_id, self.player_names[player_id])
+        self.player_locations[player_id] = room_id
+        self.attach_room_subscriber(room_id, player_id, outgoing)
+        self.lobby_subscribers[player_id] = outgoing
+        self.broadcast_room(room_id)
+        self.broadcast_lobby()
+
+    def leave_current_room(self, player_id: str, outgoing: Queue[poker_pb2.ServerEvent]) -> None:
+        room_id = self.player_locations.get(player_id, "")
+        if not room_id:
+            return
+        self.remove_player_from_room(player_id, room_id)
+        self.player_locations[player_id] = ""
+        self.lobby_subscribers[player_id] = outgoing
+        self.broadcast_lobby()
+
+    def remove_player_from_room(self, player_id: str, room_id: str) -> None:
+        room = self.rooms.get(room_id)
+        if not room:
+            return
+        room.leave(player_id)
+        self.room_subscribers[room_id] = [entry for entry in self.room_subscribers[room_id] if entry[0] != player_id]
+        if room.is_empty():
+            self.room_subscribers.pop(room_id, None)
+            self.rooms.pop(room_id, None)
+        else:
+            self.broadcast_room(room_id)
+
+    def attach_room_subscriber(self, room_id: str, player_id: str, outgoing: Queue[poker_pb2.ServerEvent]) -> None:
+        self.room_subscribers[room_id] = [entry for entry in self.room_subscribers[room_id] if entry[0] != player_id]
+        self.room_subscribers[room_id].append((player_id, outgoing))
+
+    def disconnect_player(self, player_id: str, outgoing: Queue[poker_pb2.ServerEvent]) -> None:
+        self.lobby_subscribers.pop(player_id, None)
+        location = self.player_locations.get(player_id, "")
+        if location:
+            self.remove_player_from_room(player_id, location)
+            self.player_locations[player_id] = ""
+            self.broadcast_lobby()
+        else:
+            for room_id, subscribers in list(self.room_subscribers.items()):
+                self.room_subscribers[room_id] = [entry for entry in subscribers if entry[1] is not outgoing]
+
+    def require_room_location(self, player_id: str) -> str:
+        room_id = self.player_locations.get(player_id, "")
+        if not room_id:
+            raise ValueError("Join a room first")
+        return room_id
+
+    def handle_room_event(self, player_id: str, room_id: str, event: poker_pb2.ClientEvent) -> None:
+        room = self.rooms[room_id]
         payload = event.WhichOneof("payload")
         if payload == "sit_down":
             room.sit(player_id, event.sit_down.seat_index)
         elif payload == "stand_up":
             room.stand(player_id)
+        elif payload == "change_seat":
+            room.change_seat(player_id, event.change_seat.seat_index)
         elif payload == "set_ready":
             room.set_ready(player_id, event.set_ready.ready)
         elif payload == "start_hand":
-            room.start_hand()
+            room.request_start(player_id)
         elif payload == "player_move":
             room.player_move(player_id, poker_pb2.MoveType.Name(event.player_move.type), event.player_move.amount)
         elif payload == "chat_message":
@@ -121,28 +237,40 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             with self.lock:
                 dirty_rooms = [room_id for room_id, room in self.rooms.items() if room.update(time.monotonic())]
                 for room_id in dirty_rooms:
-                    self.broadcast(room_id)
+                    self.broadcast_room(room_id)
+                    self.broadcast_lobby()
 
-    def handle_reconnect(self, event, outgoing) -> tuple[str, str, str]:
-        requested_player_id = event.reconnect.player_id or event.player_id
-        token = event.reconnect.reconnect_token or event.reconnect_token
-        if not requested_player_id or self.reconnect_tokens.get(requested_player_id) != token:
-            raise ValueError("Reconnect token is invalid")
-        room_id = event.reconnect.room_id or self.player_rooms.get(requested_player_id, "")
-        if not room_id:
-            raise ValueError("No previous room can be restored")
-        self.subscribers[room_id] = [
-            subscriber for subscriber in self.subscribers[room_id] if subscriber[0] != requested_player_id
-        ]
-        self.subscribers[room_id].append((requested_player_id, outgoing))
-        return requested_player_id, room_id, token
-
-    def broadcast(self, room_id: str) -> None:
-        for player_id, subscriber in list(self.subscribers[room_id]):
+    def broadcast_room(self, room_id: str) -> None:
+        if room_id not in self.rooms:
+            return
+        for player_id, subscriber in list(self.room_subscribers[room_id]):
             subscriber.put(self.snapshot_event(room_id, player_id))
 
+    def broadcast_lobby(self) -> None:
+        for player_id, subscriber in list(self.lobby_subscribers.items()):
+            if self.player_locations.get(player_id, ""):
+                continue
+            subscriber.put(self.lobby_snapshot_event(player_id))
+
+    def lobby_snapshot_event(self, player_id: str, request_id: str = "") -> poker_pb2.ServerEvent:
+        snapshot = poker_pb2.LobbySnapshot(hero_player_id=player_id, hero_name=self.player_names.get(player_id, ""))
+        for room in self.rooms.values():
+            snapshot.rooms.append(
+                poker_pb2.LobbyRoomInfo(
+                    room_id=room.room_id,
+                    display_name=room.display_name,
+                    owner_player_id=room.owner_player_id,
+                    owner_name=self.player_names.get(room.owner_player_id, room.players.get(room.owner_player_id, "")),
+                    player_count=len(room.players),
+                    seat_count=len(room.seats),
+                    ready_count=room.ready_player_count(),
+                    room_status=getattr(poker_pb2, room.room_status.value),
+                )
+            )
+        return self.server_event(request_id=request_id, lobby_snapshot=snapshot)
+
     def snapshot_event(self, room_id: str, hero_player_id: str, request_id: str = "") -> poker_pb2.ServerEvent:
-        room = self.get_room(room_id)
+        room = self.rooms[room_id]
         snapshot = poker_pb2.RoomSnapshot(
             room_id=room.room_id,
             hero_player_id=hero_player_id,
@@ -155,7 +283,9 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             hand_number=room.hand_number,
             log=room.log[-8:],
             current_hand_id=room.current_hand_id,
-            auto_start_countdown_seconds=room.countdown_seconds_remaining(time.monotonic()),
+            starting_countdown_seconds=room.starting_countdown_seconds(time.monotonic()),
+            owner_player_id=room.owner_player_id,
+            room_status=getattr(poker_pb2, room.room_status.value),
         )
         snapshot.seats.extend(
             poker_pb2.Seat(
@@ -175,11 +305,28 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             )
             for seat in room.seats
         )
+        snapshot.members.extend(
+            poker_pb2.RoomMember(
+                player_id=player_id,
+                name=name,
+                is_owner=is_owner,
+                ready=ready,
+                seat_index=seat_index,
+            )
+            for player_id, name, is_owner, seat_index, ready in room.members()
+        )
         snapshot.board.extend(card_to_proto(card) for card in room.board)
         snapshot.hero_cards.extend(card_to_proto(card) for card in room.hero_cards(hero_player_id))
         if room.last_hand_summary:
             snapshot.last_hand_result.CopyFrom(hand_result_to_proto(room))
         return self.server_event(request_id=request_id, snapshot=snapshot)
+
+    def joined_payload(self, player_id: str, room_id: str) -> poker_pb2.Joined:
+        return poker_pb2.Joined(
+            player_id=player_id,
+            room_id=room_id,
+            reconnect_token=self.reconnect_tokens[player_id],
+        )
 
     def server_event(self, request_id: str = "", **payload) -> poker_pb2.ServerEvent:
         return poker_pb2.ServerEvent(event_id=uuid.uuid4().hex, request_id=request_id, **payload)

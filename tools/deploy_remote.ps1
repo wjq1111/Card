@@ -101,10 +101,12 @@ python tools/generate_grpc.py
 if [ "$restart_mode" = "yes" ]; then
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$service_name.service" >/dev/null 2>&1; then
     sudo systemctl restart "$service_name"
-    sudo systemctl --no-pager --full status "$service_name" || true
+    sudo systemctl is-active --quiet "$service_name"
+    sudo systemctl --no-pager --full status "$service_name"
   else
-    echo "Service $service_name.service was not found; code is deployed but the server was not restarted."
-    echo "Start manually with: cd $remote_path && . .venv/bin/activate && python -m server.main"
+    echo "Service $service_name.service was not found on the server." >&2
+    echo "Expected deploy flow is code update plus remote restart. Create the service or run with -NoRestart intentionally." >&2
+    exit 1
   fi
 else
   echo "Skipped service restart because -NoRestart was passed."

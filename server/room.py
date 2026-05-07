@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import random
 import time
 from typing import Iterable
 
@@ -13,7 +14,7 @@ from shared.settlement import PotAward, ShowdownPlayer, ShowdownResult, settle_s
 STARTING_CHIPS = 2000
 SMALL_BLIND = 10
 BIG_BLIND = 20
-AUTO_START_COUNTDOWN = 3.0
+START_GAME_COUNTDOWN = 5.0
 HAND_COMPLETE_PAUSE = 2.0
 
 
@@ -25,6 +26,12 @@ class Phase(str, Enum):
     RIVER = "RIVER"
     SHOWDOWN = "SHOWDOWN"
     HAND_COMPLETE = "HAND_COMPLETE"
+
+
+class RoomStatus(str, Enum):
+    OPEN = "OPEN"
+    STARTING = "STARTING"
+    PLAYING = "PLAYING"
 
 
 @dataclass
@@ -60,12 +67,17 @@ class PokerRoom:
         room_id: str,
         seat_count: int = 6,
         *,
+        display_name: str = "",
         logger: GameLogStore | None = None,
-        auto_start_countdown: float = AUTO_START_COUNTDOWN,
+        start_game_countdown: float = START_GAME_COUNTDOWN,
         hand_complete_pause: float = HAND_COMPLETE_PAUSE,
+        rng: random.Random | None = None,
     ) -> None:
         self.room_id = room_id
+        self.display_name = display_name or room_id
         self.players: dict[str, str] = {}
+        self.owner_player_id = ""
+        self.room_status = RoomStatus.OPEN
         self.seats = [Seat(seat_index=index) for index in range(seat_count)]
         self.deck: list[Card] = []
         self.board: list[Card] = []
@@ -79,26 +91,41 @@ class PokerRoom:
         self.log: list[str] = []
         self.last_hand_summary: HandSummary | None = None
         self.current_hand_id = ""
-        self.countdown_deadline_at: float | None = None
+        self.starting_deadline_at: float | None = None
         self.hand_complete_at: float | None = None
-        self._last_countdown_value: int | None = None
+        self._last_starting_value: int | None = None
         self.logger = logger
-        self.auto_start_countdown = auto_start_countdown
+        self.start_game_countdown = start_game_countdown
         self.hand_complete_pause = hand_complete_pause
+        self.rng = rng or random.Random()
 
     def join(self, player_id: str, name: str) -> None:
-        self.players[player_id] = name.strip() or "Player"
-        self.log_line(f"{self.players[player_id]} joined room", event_type="ROOM")
+        cleaned_name = name.strip() or "Player"
+        self.players[player_id] = cleaned_name
+        if not self.owner_player_id:
+            self.owner_player_id = player_id
+        self.log_line(f"{cleaned_name} joined room", event_type="ROOM")
 
     def leave(self, player_id: str) -> None:
-        self.players.pop(player_id, None)
+        player_name = self.players.pop(player_id, "")
         seat = self.find_seat(player_id)
         if seat:
             self.clear_seat(seat)
+        if self.owner_player_id == player_id:
+            self.owner_player_id = next(iter(self.players), "")
+            if self.starting_deadline_at is not None:
+                self.cancel_start("Owner left the room")
+        if player_name:
+            self.log_line(f"{player_name} left room", event_type="ROOM")
+        if self.starting_deadline_at is not None and self.ready_player_count() < 2:
+            self.cancel_start("Not enough ready players")
+
+    def is_empty(self) -> bool:
+        return not self.players
 
     def sit(self, player_id: str, seat_index: int) -> None:
-        if player_id not in self.players:
-            raise ValueError("Player has not joined this room")
+        self.assert_can_change_seat()
+        self._validate_room_player(player_id)
         if seat_index < 0 or seat_index >= len(self.seats):
             raise ValueError("Seat does not exist")
         if self.find_seat(player_id):
@@ -112,41 +139,97 @@ class PokerRoom:
         self.log_line(f"{seat.name} sat down at seat {seat.seat_index + 1}", event_type="SEAT")
 
     def stand(self, player_id: str) -> None:
+        self.assert_can_change_seat()
         seat = self.require_seat(player_id)
         self.clear_seat(seat)
+        self.log_line(f"{self.players[player_id]} stood up", event_type="SEAT")
+
+    def change_seat(self, player_id: str, seat_index: int) -> None:
+        self.assert_can_change_seat()
+        if seat_index < 0 or seat_index >= len(self.seats):
+            raise ValueError("Seat does not exist")
+        current = self.require_seat(player_id)
+        target = self.seats[seat_index]
+        if target.player_id:
+            raise ValueError("Seat is occupied")
+        current.ready = False
+        target.player_id = current.player_id
+        target.name = current.name
+        target.chips = current.chips
+        target.ready = current.ready
+        self.clear_seat(current, preserve_chips=False)
+        self.log_line(f"{target.name} changed to seat {seat_index + 1}", event_type="SEAT")
 
     def set_ready(self, player_id: str, ready: bool) -> None:
         seat = self.require_seat(player_id)
+        if self.starting_deadline_at is not None and not ready:
+            raise ValueError("Cannot cancel ready after the game countdown begins")
         if ready and seat.chips <= 0:
             raise ValueError("Players with zero chips cannot be ready")
         seat.ready = ready
         self.log_line(f"{seat.name} is {'ready' if ready else 'not ready'}", event_type="READY")
-        if self.phase == Phase.WAITING and self.ready_player_count() < 2:
-            self.cancel_countdown("Not enough ready players")
 
-    def start_hand(self) -> None:
-        if self.phase not in (Phase.WAITING, Phase.HAND_COMPLETE):
-            raise ValueError("A hand is already running")
+    def request_start(self, player_id: str, now: float | None = None) -> None:
+        if player_id != self.owner_player_id:
+            raise ValueError("Only the room owner can start the game")
+        if self.room_status != RoomStatus.OPEN or self.phase not in (Phase.WAITING, Phase.HAND_COMPLETE):
+            raise ValueError("Room is not ready to start")
         if self.phase == Phase.HAND_COMPLETE:
             self.reset_table_for_next_hand()
+        if not self.can_start():
+            raise ValueError("All seated players with chips must be ready and at least two players are required")
+        self.room_status = RoomStatus.STARTING
+        current_time = time.monotonic() if now is None else now
+        self.starting_deadline_at = current_time + self.start_game_countdown
+        self._last_starting_value = self.starting_countdown_seconds(current_time)
+        self.log_line(
+            f"{self.players[player_id]} started the game countdown",
+            event_type="COUNTDOWN",
+            data={"seconds": self._last_starting_value},
+        )
+
+    def can_start(self) -> bool:
+        active = self.startable_seats()
+        return len(active) >= 2 and all(seat.ready for seat in active)
+
+    def update(self, now: float) -> bool:
+        changed = False
+        if self.phase == Phase.HAND_COMPLETE and self.hand_complete_at is not None and now >= self.hand_complete_at:
+            self.reset_table_for_next_hand()
+            changed = True
+        if self.room_status == RoomStatus.STARTING and self.starting_deadline_at is not None:
+            if len(self.startable_seats()) < 2:
+                self.cancel_start("Not enough ready players")
+                return True
+            countdown = self.starting_countdown_seconds(now)
+            if countdown != self._last_starting_value:
+                self._last_starting_value = countdown
+                changed = True
+            if now >= self.starting_deadline_at:
+                self.start_hand()
+                changed = True
+        return changed
+
+    def start_hand(self) -> None:
         active = [seat for seat in self.seats if seat.player_id and seat.ready and seat.chips > 0]
         if len(active) < 2:
             raise ValueError("At least two ready players are required")
 
         starting_stacks = {seat.seat_index: seat.chips for seat in self.seats}
         self.phase = Phase.PREFLOP
+        self.room_status = RoomStatus.PLAYING
         self.hand_number += 1
         self.deck = shuffled_deck()
         self.board = []
         self.pot = 0
         self.current_bet = BIG_BLIND
         self.min_raise = BIG_BLIND
-        self.dealer_seat = self.next_occupied_seat(self.dealer_seat)
+        self.dealer_seat = self.rng.choice([seat.seat_index for seat in active])
         self.last_hand_summary = None
         self.current_hand_id = generate_hand_id(self.room_id, self.hand_number)
-        self.countdown_deadline_at = None
+        self.starting_deadline_at = None
         self.hand_complete_at = None
-        self._last_countdown_value = None
+        self._last_starting_value = None
 
         for seat in self.seats:
             seat.committed = 0
@@ -154,7 +237,7 @@ class PokerRoom:
             seat.folded = False
             seat.all_in = False
             seat.acted_this_round = False
-            seat.hole_cards = self.draw(2) if seat.player_id and seat.ready else []
+            seat.hole_cards = self.draw(2) if seat.player_id and seat.ready and seat.chips > 0 else []
 
         active_after_deal = [seat for seat in self.seats if seat.player_id and seat.ready and seat.hole_cards]
         small_blind, big_blind = self.blind_seats(active_after_deal)
@@ -172,36 +255,6 @@ class PokerRoom:
                 "big_blind_seat": big_blind,
             },
         )
-
-    def update(self, now: float) -> bool:
-        changed = False
-        if self.phase == Phase.HAND_COMPLETE and self.hand_complete_at is not None and now >= self.hand_complete_at:
-            self.reset_table_for_next_hand()
-            changed = True
-        if self.phase == Phase.WAITING:
-            ready_count = self.ready_player_count()
-            if ready_count >= 2:
-                if self.countdown_deadline_at is None:
-                    self.countdown_deadline_at = now + self.auto_start_countdown
-                    self._last_countdown_value = self.countdown_seconds_remaining(now)
-                    self.log_line(
-                        f"Auto start countdown began with {ready_count} ready players",
-                        event_type="COUNTDOWN",
-                        data={"seconds": self._last_countdown_value},
-                    )
-                    changed = True
-                else:
-                    countdown = self.countdown_seconds_remaining(now)
-                    if countdown != self._last_countdown_value:
-                        self._last_countdown_value = countdown
-                        changed = True
-                    if now >= self.countdown_deadline_at:
-                        self.start_hand()
-                        changed = True
-            elif self.countdown_deadline_at is not None:
-                self.cancel_countdown("Ready player count dropped below two")
-                changed = True
-        return changed
 
     def player_move(self, player_id: str, move_type: str, amount: int = 0) -> None:
         seat = self.require_seat(player_id)
@@ -233,11 +286,7 @@ class PokerRoom:
             self.current_bet = target_bet
             self.commit(seat, target_bet - seat.committed)
             self.reset_action_after_raise(seat)
-            self.log_line(
-                f"{seat.name} raised to {target_bet}",
-                event_type="ACTION",
-                hand_id=self.current_hand_id,
-            )
+            self.log_line(f"{seat.name} raised to {target_bet}", event_type="ACTION", hand_id=self.current_hand_id)
         elif move_type == "ALL_IN":
             target_bet = seat.committed + seat.chips
             self.commit(seat, seat.chips)
@@ -405,7 +454,8 @@ class PokerRoom:
             raise ValueError("Player is not seated")
         return seat
 
-    def clear_seat(self, seat: Seat) -> None:
+    def clear_seat(self, seat: Seat, *, preserve_chips: bool = True) -> None:
+        chips = seat.chips if preserve_chips else STARTING_CHIPS
         seat.player_id = ""
         seat.name = ""
         seat.ready = False
@@ -415,6 +465,7 @@ class PokerRoom:
         seat.folded = False
         seat.all_in = False
         seat.acted_this_round = False
+        seat.chips = chips
 
     def log_line(
         self,
@@ -466,10 +517,11 @@ class PokerRoom:
 
     def finish_hand(self) -> None:
         self.phase = Phase.HAND_COMPLETE
+        self.room_status = RoomStatus.PLAYING
         self.active_seat = -1
         self.hand_complete_at = time.monotonic() + self.hand_complete_pause
-        self.countdown_deadline_at = None
-        self._last_countdown_value = None
+        self.starting_deadline_at = None
+        self._last_starting_value = None
         self.log_line(
             f"Hand {self.hand_number} completed",
             event_type="HAND_END",
@@ -484,10 +536,11 @@ class PokerRoom:
         self.current_bet = 0
         self.min_raise = BIG_BLIND
         self.phase = Phase.WAITING
+        self.room_status = RoomStatus.OPEN
         self.active_seat = -1
         self.hand_complete_at = None
-        self.countdown_deadline_at = None
-        self._last_countdown_value = None
+        self.starting_deadline_at = None
+        self._last_starting_value = None
         self.current_hand_id = ""
         for seat in self.seats:
             seat.committed = 0
@@ -501,15 +554,44 @@ class PokerRoom:
     def ready_player_count(self) -> int:
         return len([seat for seat in self.seats if seat.player_id and seat.ready and seat.chips > 0])
 
-    def cancel_countdown(self, reason: str) -> None:
-        self.countdown_deadline_at = None
-        self._last_countdown_value = None
-        self.log_line(f"Auto start countdown cancelled: {reason}", event_type="COUNTDOWN", hand_id="")
-
-    def countdown_seconds_remaining(self, now: float) -> int:
-        if self.countdown_deadline_at is None:
+    def starting_countdown_seconds(self, now: float) -> int:
+        if self.starting_deadline_at is None:
             return 0
-        remaining = max(0.0, self.countdown_deadline_at - now)
+        remaining = max(0.0, self.starting_deadline_at - now)
         if remaining <= 0:
             return 0
         return int(remaining) + (0 if remaining.is_integer() else 1)
+
+    def startable_seats(self) -> list[Seat]:
+        return [seat for seat in self.seats if seat.player_id and seat.chips > 0]
+
+    def members(self) -> list[tuple[str, str, bool, int, bool]]:
+        member_rows: list[tuple[str, str, bool, int, bool]] = []
+        for player_id, name in self.players.items():
+            seat = self.find_seat(player_id)
+            member_rows.append(
+                (
+                    player_id,
+                    name,
+                    player_id == self.owner_player_id,
+                    seat.seat_index if seat else -1,
+                    seat.ready if seat else False,
+                )
+            )
+        return member_rows
+
+    def assert_can_change_seat(self) -> None:
+        if self.room_status == RoomStatus.STARTING:
+            raise ValueError("Seats are locked after the owner starts the game")
+        if self.room_status == RoomStatus.PLAYING and self.phase != Phase.WAITING:
+            raise ValueError("Cannot change seats during an active hand")
+
+    def cancel_start(self, reason: str) -> None:
+        self.starting_deadline_at = None
+        self._last_starting_value = None
+        self.room_status = RoomStatus.OPEN
+        self.log_line(f"Game countdown cancelled: {reason}", event_type="COUNTDOWN", hand_id="")
+
+    def _validate_room_player(self, player_id: str) -> None:
+        if player_id not in self.players:
+            raise ValueError("Player has not joined this room")

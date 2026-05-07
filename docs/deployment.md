@@ -24,7 +24,15 @@ From the project root on your local machine:
 deploy.bat
 ```
 
-This defaults to the `dev` branch. The underlying PowerShell command is:
+This defaults to the `dev` branch and now performs three steps in order:
+
+1. build the latest client package
+2. push the current local `HEAD` to `origin/dev`
+3. log into the server and deploy `dev`
+
+Because the script pushes a git commit rather than raw local files, the working tree must be clean before deploy. If you still have modified or staged-but-uncommitted files, `deploy.bat` stops and asks you to commit first.
+
+The remote deployment step is still driven by:
 
 ```powershell
 .\tools\deploy_remote.ps1 -User root -Branch dev
@@ -77,7 +85,7 @@ Or call the PowerShell script directly:
 .\tools\deploy_remote.ps1 -User ubuntu -Branch feature/table-flow
 ```
 
-This lets you test a branch on the remote server without merging it into `master`.
+This pushes the current local `HEAD` to `origin/feature/table-flow` first, then deploys that remote branch to the server.
 
 ## Deploy master
 
@@ -89,7 +97,10 @@ deploy-master.bat
 
 ## Service restart
 
-By default the script tries to restart `texas-holdem.service` after updating code. If the service does not exist yet, the script still installs dependencies and generates gRPC code, then prints the manual start command.
+By default the script restarts `texas-holdem.service` after updating code. The restart is now treated as part of a successful deploy:
+
+1. if the service exists, the script restarts it and verifies that it is active
+2. if the service does not exist, the deploy fails instead of silently leaving the old process in place
 
 To deploy without restarting:
 
