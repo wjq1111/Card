@@ -1,0 +1,3 @@
+display_name: Texas Holdem Release Flow
+short_description: Validate dev deploys before master.
+default_prompt: Use this flow to validate locally, push dev, deploy the remote server, test connectivity, then prepare master only after all gates pass.
