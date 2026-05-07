@@ -26,7 +26,7 @@ if errorlevel 1 (
 
 git diff --cached --quiet
 if errorlevel 1 (
-    for /f "delims=" %%i in ('powershell -NoProfile -Command "Get-Date -Format ''yyyy-MM-dd HH:mm:ss''"') do set "DEPLOY_TIMESTAMP=%%i"
+    set "DEPLOY_TIMESTAMP=%DATE% %TIME%"
     git commit -m "deploy: snapshot %DEPLOY_TIMESTAMP%"
     if errorlevel 1 (
         echo Failed to create deployment snapshot commit.
