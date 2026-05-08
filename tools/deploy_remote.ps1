@@ -217,6 +217,7 @@ function Invoke-DeploySequence {
         Write-Warning "Git-based remote sync failed. Falling back to local archive upload."
         $localArchivePath = Join-Path $env:TEMP ("texas_holdem_bundle_" + [guid]::NewGuid().ToString("N") + ".tar.gz")
         try {
+            Invoke-SshChecked -SshArgs $ConnectionArgs -TargetHost $target -RemoteCommand $uploadCommand -StepName "re-upload deploy script for archive fallback" -InputText $remoteScriptForUpload
             git archive --format=tar.gz --output="$localArchivePath" HEAD
             if ($LASTEXITCODE -ne 0) {
                 throw "Failed to create local git archive fallback bundle."
