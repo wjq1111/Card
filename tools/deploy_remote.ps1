@@ -89,6 +89,14 @@ fi
 
 cd "$remote_path"
 
+before_commit="$(git rev-parse HEAD 2>/dev/null || true)"
+before_pid=""
+before_started=""
+if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$service_name.service" >/dev/null 2>&1; then
+  before_pid="$(systemctl show "$service_name" -p ExecMainPID --value 2>/dev/null || true)"
+  before_started="$(systemctl show "$service_name" -p ExecMainStartTimestamp --value 2>/dev/null || true)"
+fi
+
 if [ ! -d ".venv" ]; then
   "$python_bin" -m venv .venv
 fi
@@ -98,10 +106,21 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 python tools/generate_grpc.py
 
+after_commit="$(git rev-parse HEAD)"
+echo "Remote HEAD before deploy: ${before_commit:-unknown}"
+echo "Remote HEAD after sync:    $after_commit"
+
 if [ "$restart_mode" = "yes" ]; then
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$service_name.service" >/dev/null 2>&1; then
+    sudo systemctl daemon-reload
     sudo systemctl restart "$service_name"
     sudo systemctl is-active --quiet "$service_name"
+    after_pid="$(systemctl show "$service_name" -p ExecMainPID --value)"
+    after_started="$(systemctl show "$service_name" -p ExecMainStartTimestamp --value)"
+    echo "Service PID before restart: ${before_pid:-unknown}"
+    echo "Service PID after restart:  ${after_pid:-unknown}"
+    echo "Service start before:       ${before_started:-unknown}"
+    echo "Service start after:        ${after_started:-unknown}"
     sudo systemctl --no-pager --full status "$service_name"
   else
     echo "Service $service_name.service was not found on the server." >&2
