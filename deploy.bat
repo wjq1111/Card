@@ -3,6 +3,10 @@ setlocal
 
 set "BRANCH=%~1"
 if "%BRANCH%"=="" set "BRANCH=dev"
+set "DEPLOY_PASSWORD="
+if exist "%~dp0deploy.password.txt" (
+    set /p DEPLOY_PASSWORD=<"%~dp0deploy.password.txt"
+)
 
 for /f "delims=" %%i in ('git branch --show-current 2^>nul') do set "CURRENT_BRANCH=%%i"
 if not defined CURRENT_BRANCH (
@@ -44,7 +48,11 @@ if errorlevel 1 (
 )
 
 echo [4/4] Deploying latest server branch "%BRANCH%"...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\deploy_remote.ps1" -User root -Branch "%BRANCH%"
+if defined DEPLOY_PASSWORD (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\deploy_remote.ps1" -User root -Branch "%BRANCH%" -Password "%DEPLOY_PASSWORD%"
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\deploy_remote.ps1" -User root -Branch "%BRANCH%"
+)
 if errorlevel 1 (
     echo Server deployment failed.
     exit /b %errorlevel%
