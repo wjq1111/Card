@@ -166,6 +166,24 @@ echo "Deployed snapshot ref: $deployed_ref"
 
 if [ "$restart_mode" = "yes" ]; then
   if command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "$service_name.service" >/dev/null 2>&1; then
+    sudo tee "/etc/systemd/system/$service_name.service" >/dev/null <<SERVICE
+[Unit]
+Description=Texas Holdem Online gRPC server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$remote_path
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$remote_path/.venv/bin/python -m src.server.main
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+SERVICE
     sudo systemctl daemon-reload
     sudo systemctl restart "$service_name"
     sudo systemctl is-active --quiet "$service_name"

@@ -77,6 +77,7 @@ python -m unittest discover -s tests -v
 - Update tests even for bug fixes; the bug should be guarded by at least one automated assertion.
 - If a request is ambiguous, clarify the requirement delta before changing code.
 - Never treat "it should still work" as a substitute for running self-validation.
+- Do not keep temporary compatibility layers, duplicate package trees, or deprecated directories once the final path is known. Remove obsolete structure in the same change.
 
 ## Handoff
 

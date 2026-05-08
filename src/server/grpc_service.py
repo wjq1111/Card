@@ -9,11 +9,11 @@ import uuid
 
 import grpc
 
-from proto_gen import poker_pb2, poker_pb2_grpc
-from server.chip_store import PlayerChipStore
-from server.room import PokerRoom, RoomStatus
-from shared.cards import Card
-from shared.game_logging import GameLogStore
+from src.proto_gen import poker_pb2, poker_pb2_grpc
+from src.server.chip_store import PlayerChipStore
+from src.server.room import PokerRoom, RoomStatus
+from src.shared.cards import Card
+from src.shared.game_logging import GameLogStore
 
 
 class PokerService(poker_pb2_grpc.PokerServiceServicer):

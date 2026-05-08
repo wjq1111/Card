@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from proto_gen import poker_pb2 as poker__pb2
+from src.proto_gen import poker_pb2 as poker__pb2
 
 GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__

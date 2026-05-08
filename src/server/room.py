@@ -6,9 +6,9 @@ import random
 import time
 from typing import Callable, Iterable
 
-from shared.cards import Card, shuffled_deck
-from shared.game_logging import GameLogStore, generate_hand_id
-from shared.settlement import PotAward, ShowdownPlayer, ShowdownResult, settle_showdown
+from src.shared.cards import Card, shuffled_deck
+from src.shared.game_logging import GameLogStore, generate_hand_id
+from src.shared.settlement import PotAward, ShowdownPlayer, ShowdownResult, settle_showdown
 
 
 STARTING_CHIPS = 2000

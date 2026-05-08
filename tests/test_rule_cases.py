@@ -1,10 +1,10 @@
 import random
 import unittest
 
-from shared.cards import Card
-from shared.hand_evaluator import evaluate_best_hand
-from shared.settlement import ShowdownPlayer, settle_showdown
-from server.room import BIG_BLIND, Phase, PokerRoom
+from src.shared.cards import Card
+from src.shared.hand_evaluator import evaluate_best_hand
+from src.shared.settlement import ShowdownPlayer, settle_showdown
+from src.server.room import BIG_BLIND, Phase, PokerRoom
 
 
 def c(rank: str, suit: str) -> Card:

@@ -27,7 +27,7 @@ def main() -> None:
     grpc_file.write_text(
         grpc_file.read_text(encoding="utf-8").replace(
             "import poker_pb2 as poker__pb2",
-            "from proto_gen import poker_pb2 as poker__pb2",
+            "from src.proto_gen import poker_pb2 as poker__pb2",
         ),
         encoding="utf-8",
     )

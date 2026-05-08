@@ -6,12 +6,11 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC_ROOT = ROOT / "src"
-src_path = str(SRC_ROOT)
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
+root_path = str(ROOT)
+if root_path not in sys.path:
+    sys.path.insert(0, root_path)
 
-from server.chip_store import PlayerChipStore
+from src.server.chip_store import PlayerChipStore
 
 
 def build_parser() -> argparse.ArgumentParser:

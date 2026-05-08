@@ -1,7 +1,7 @@
 import unittest
 
-from shared.cards import Card
-from shared.settlement import ShowdownPlayer, settle_showdown
+from src.shared.cards import Card
+from src.shared.settlement import ShowdownPlayer, settle_showdown
 
 
 def c(rank: str, suit: str) -> Card:

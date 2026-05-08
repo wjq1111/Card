@@ -2,10 +2,10 @@ import random
 import unittest
 from tempfile import TemporaryDirectory
 
-from server.chip_store import PlayerChipStore
-from shared.cards import Card
-from shared.game_logging import GameLogStore
-from server.room import Phase, PokerRoom, RoomStatus
+from src.server.chip_store import PlayerChipStore
+from src.shared.cards import Card
+from src.shared.game_logging import GameLogStore
+from src.server.room import Phase, PokerRoom, RoomStatus
 
 
 def c(rank: str, suit: str) -> Card:

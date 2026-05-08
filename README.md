@@ -33,13 +33,13 @@ python tools\generate_grpc.py
 Start the server:
 
 ```powershell
-python -m server.main
+python -m src.server.main
 ```
 
 Start the client:
 
 ```powershell
-python -m client.main
+python -m src.client.main
 ```
 
 Default public server: `119.45.157.13:50051`

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from shared.cards import Card
-from shared.hand_evaluator import EvaluatedHand, evaluate_best_hand
+from src.shared.cards import Card
+from src.shared.hand_evaluator import EvaluatedHand, evaluate_best_hand
 
 
 @dataclass(frozen=True)

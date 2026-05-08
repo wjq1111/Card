@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from itertools import combinations
 from typing import Iterable
 
-from shared.cards import Card
+from src.shared.cards import Card
 
 
 RANK_VALUES = {

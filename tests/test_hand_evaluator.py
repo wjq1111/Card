@@ -1,7 +1,7 @@
 import unittest
 
-from shared.cards import Card
-from shared.hand_evaluator import evaluate_best_hand
+from src.shared.cards import Card
+from src.shared.hand_evaluator import evaluate_best_hand
 
 
 def c(rank: str, suit: str = "SPADES") -> Card:

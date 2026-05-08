@@ -25,7 +25,8 @@
 
 ## Notes For Agents
 
-- Imports still use package names like `server.*` and `client.*`; `sitecustomize.py` injects `src/` into `sys.path` so commands can still run from the repo root.
+- Final code imports should use `src.*` package paths. Do not add compatibility shims or duplicate root-level packages.
 - If a deploy reaches the server but GitHub is unavailable, `tools/deploy_remote.ps1` should fall back to a local `git archive` plus `scp` upload.
 - If you need to inspect the currently deployed revision on the server, check `/root/TexasHoldemOnline/.deployed_head` and `systemctl show texas-holdem.service`.
 - Keep new source code under `src/`, not at the repo root.
+- Do not leave temporary compatibility layers or deprecated directories in the repo. If a path is obsolete and no longer needed, remove it in the same change.

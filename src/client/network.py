@@ -6,7 +6,7 @@ import uuid
 
 import grpc
 
-from proto_gen import poker_pb2, poker_pb2_grpc
+from src.proto_gen import poker_pb2, poker_pb2_grpc
 
 
 class PokerClientConnection:

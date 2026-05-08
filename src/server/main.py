@@ -1,4 +1,4 @@
-from server.grpc_service import create_server
+from src.server.grpc_service import create_server
 
 
 def main() -> None:

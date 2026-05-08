@@ -8,9 +8,9 @@ from dataclasses import dataclass
 
 import pygame
 
-from client.network import PokerClientConnection
-from proto_gen import poker_pb2
-from shared.game_logging import GameLogStore
+from src.client.network import PokerClientConnection
+from src.proto_gen import poker_pb2
+from src.shared.game_logging import GameLogStore
 
 
 WIDTH = 1280

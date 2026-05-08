@@ -9,8 +9,8 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame
 
-from client.main import PokerApp
-from proto_gen import poker_pb2
+from src.client.main import PokerApp
+from src.proto_gen import poker_pb2
 
 
 def proto_card(rank: int, suit: int) -> poker_pb2.Card:

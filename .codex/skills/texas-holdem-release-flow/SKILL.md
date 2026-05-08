@@ -51,6 +51,7 @@ deploy.bat
    - This deploys `dev` to `119.45.157.13:/root/TexasHoldemOnline` and restarts `texas-holdem.service`.
    - It first tries to sync from GitHub, then falls back to local `git archive + scp` upload when GitHub is unavailable from the server.
    - To deploy another branch for testing, use `deploy.bat <branch>`.
+   - Do not keep deprecated deployment paths or compatibility directories alive after the new structure is verified.
 
 5. Remote validation
    - Verify the service is active on the server.
