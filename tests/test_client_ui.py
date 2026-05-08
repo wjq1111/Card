@@ -207,7 +207,7 @@ class PokerAppUiTest(unittest.TestCase):
 
         self.app.address_input.value = "127.0.0.1:60001"
         self.app.name_input.value = "Alice"
-        with patch("client.main.PokerClientConnection", side_effect=fake_factory):
+        with patch("src.client.main.PokerClientConnection", side_effect=fake_factory):
             self.app.login()
 
         self.assertEqual(len(created_connections), 1)
@@ -260,7 +260,7 @@ class PokerAppUiTest(unittest.TestCase):
         def capture_text(surface, font, text, x, y, color) -> None:
             rendered_text.append(text)
 
-        with patch("client.main.draw_text", side_effect=capture_text):
+        with patch("src.client.main.draw_text", side_effect=capture_text):
             self.app.draw(self.app.make_buttons())
 
         self.assertIn("上一手赢家: 2", rendered_text)
