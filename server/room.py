@@ -39,6 +39,7 @@ class Seat:
     seat_index: int
     player_id: str = ""
     name: str = ""
+    avatar_id: str = ""
     chips: int = STARTING_CHIPS
     committed: int = 0
     hand_committed: int = 0
@@ -78,6 +79,7 @@ class PokerRoom:
         self.room_id = room_id
         self.display_name = display_name or room_id
         self.players: dict[str, str] = {}
+        self.player_avatars: dict[str, str] = {}
         self.owner_player_id = ""
         self.room_status = RoomStatus.OPEN
         self.seats = [Seat(seat_index=index) for index in range(seat_count)]
@@ -103,15 +105,17 @@ class PokerRoom:
         self.chip_resolver = chip_resolver
         self.chip_persistor = chip_persistor
 
-    def join(self, player_id: str, name: str) -> None:
+    def join(self, player_id: str, name: str, avatar_id: str = "") -> None:
         cleaned_name = name.strip() or "Player"
         self.players[player_id] = cleaned_name
+        self.player_avatars[player_id] = avatar_id.strip()
         if not self.owner_player_id:
             self.owner_player_id = player_id
         self.log_line(f"{cleaned_name} joined room", event_type="ROOM")
 
     def leave(self, player_id: str) -> None:
         player_name = self.players.pop(player_id, "")
+        self.player_avatars.pop(player_id, None)
         seat = self.find_seat(player_id)
         if seat:
             self.sync_player_chips(player_id, seat.chips)
@@ -140,6 +144,7 @@ class PokerRoom:
             raise ValueError("Seat is occupied")
         seat.player_id = player_id
         seat.name = self.players[player_id]
+        seat.avatar_id = self.player_avatars.get(player_id, "")
         seat.chips = self.initial_chips_for(player_id)
         seat.ready = False
         self.log_line(f"{seat.name} sat down at seat {seat.seat_index + 1}", event_type="SEAT")
@@ -162,6 +167,7 @@ class PokerRoom:
         current.ready = False
         target.player_id = current.player_id
         target.name = current.name
+        target.avatar_id = current.avatar_id
         target.chips = current.chips
         target.ready = current.ready
         self.clear_seat(current, preserve_chips=False)
@@ -467,6 +473,7 @@ class PokerRoom:
         chips = seat.chips if preserve_chips else STARTING_CHIPS
         seat.player_id = ""
         seat.name = ""
+        seat.avatar_id = ""
         seat.ready = False
         seat.hole_cards.clear()
         seat.committed = 0
@@ -589,14 +596,15 @@ class PokerRoom:
     def startable_seats(self) -> list[Seat]:
         return [seat for seat in self.seats if seat.player_id and seat.chips > 0]
 
-    def members(self) -> list[tuple[str, str, bool, int, bool]]:
-        member_rows: list[tuple[str, str, bool, int, bool]] = []
+    def members(self) -> list[tuple[str, str, str, bool, int, bool]]:
+        member_rows: list[tuple[str, str, str, bool, int, bool]] = []
         for player_id, name in self.players.items():
             seat = self.find_seat(player_id)
             member_rows.append(
                 (
                     player_id,
                     name,
+                    self.player_avatars.get(player_id, ""),
                     player_id == self.owner_player_id,
                     seat.seat_index if seat else -1,
                     seat.ready if seat else False,

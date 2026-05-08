@@ -31,6 +31,7 @@ message ClientEvent {
 
 message Login {
   string name = 1;
+  string avatar_id = 2;
 }
 
 message ListRooms {}
@@ -99,6 +100,7 @@ message LoginAccepted {
   string player_id = 1;
   string player_name = 2;
   string reconnect_token = 3;
+  string avatar_id = 4;
 }
 
 message Joined {
@@ -127,6 +129,7 @@ message LobbySnapshot {
   string hero_player_id = 1;
   string hero_name = 2;
   repeated LobbyRoomInfo rooms = 3;
+  string hero_avatar_id = 4;
 }
 
 message RoomMember {
@@ -135,6 +138,7 @@ message RoomMember {
   bool is_owner = 3;
   bool ready = 4;
   int32 seat_index = 5;
+  string avatar_id = 6;
 }
 
 message RoomSnapshot {
@@ -174,6 +178,7 @@ message Seat {
   int32 hand_committed = 12;
   bool acted_this_round = 13;
   bool is_offline = 14;
+  string avatar_id = 15;
 }
 
 message PrivatePlayerState {

@@ -23,6 +23,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.lobby_subscribers: dict[str, Queue[poker_pb2.ServerEvent]] = {}
         self.reconnect_tokens: dict[str, str] = {}
         self.player_names: dict[str, str] = {}
+        self.player_avatars: dict[str, str] = {}
         self.player_locations: dict[str, str] = {}
         self.player_chip_balances: dict[str, int] = {}
         self.lock = threading.RLock()
@@ -107,8 +108,10 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         name = event.login.name.strip()
         if not name:
             raise ValueError("Player name is required")
+        avatar_id = event.login.avatar_id.strip()
         chips = self.chip_store.get_or_create(name)
         self.player_names[player_id] = name
+        self.player_avatars[player_id] = avatar_id
         self.player_chip_balances[player_id] = chips
         self.reconnect_tokens[player_id] = reconnect_token
         self.player_locations[player_id] = ""
@@ -120,6 +123,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
                     player_id=player_id,
                     player_name=name,
                     reconnect_token=reconnect_token,
+                    avatar_id=avatar_id,
                 ),
             )
         )
@@ -175,7 +179,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         if current_room_id:
             self.remove_player_from_room(player_id, current_room_id)
         room = self.rooms[room_id]
-        room.join(player_id, self.player_names[player_id])
+        room.join(player_id, self.player_names[player_id], self.player_avatars.get(player_id, ""))
         self.player_locations[player_id] = room_id
         self.attach_room_subscriber(room_id, player_id, outgoing)
         self.lobby_subscribers[player_id] = outgoing
@@ -271,7 +275,11 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             subscriber.put(self.lobby_snapshot_event(player_id))
 
     def lobby_snapshot_event(self, player_id: str, request_id: str = "") -> poker_pb2.ServerEvent:
-        snapshot = poker_pb2.LobbySnapshot(hero_player_id=player_id, hero_name=self.player_names.get(player_id, ""))
+        snapshot = poker_pb2.LobbySnapshot(
+            hero_player_id=player_id,
+            hero_name=self.player_names.get(player_id, ""),
+            hero_avatar_id=self.player_avatars.get(player_id, ""),
+        )
         for room in self.rooms.values():
             snapshot.rooms.append(
                 poker_pb2.LobbyRoomInfo(
@@ -310,6 +318,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
                 seat_index=seat.seat_index,
                 player_id=seat.player_id,
                 name=seat.name,
+                avatar_id=seat.avatar_id,
                 chips=seat.chips,
                 committed=seat.committed,
                 folded=seat.folded,
@@ -327,11 +336,12 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             poker_pb2.RoomMember(
                 player_id=player_id,
                 name=name,
+                avatar_id=avatar_id,
                 is_owner=is_owner,
                 ready=ready,
                 seat_index=seat_index,
             )
-            for player_id, name, is_owner, seat_index, ready in room.members()
+            for player_id, name, avatar_id, is_owner, seat_index, ready in room.members()
         )
         snapshot.board.extend(card_to_proto(card) for card in room.board)
         snapshot.hero_cards.extend(card_to_proto(card) for card in room.hero_cards(hero_player_id))

@@ -33,6 +33,16 @@ CARD = (247, 242, 226)
 CARD_RED = (184, 43, 58)
 CARD_BLACK = (30, 36, 39)
 
+AVATAR_THEMES = {
+    "ember": {"bg": (137, 58, 42), "fg": (255, 223, 183), "accent": (247, 166, 93)},
+    "mint": {"bg": (49, 121, 109), "fg": (220, 245, 234), "accent": (132, 223, 188)},
+    "ocean": {"bg": (48, 82, 132), "fg": (226, 238, 255), "accent": (130, 180, 255)},
+    "violet": {"bg": (96, 71, 134), "fg": (237, 228, 255), "accent": (183, 150, 246)},
+    "sun": {"bg": (154, 113, 42), "fg": (255, 239, 201), "accent": (255, 211, 92)},
+    "rose": {"bg": (142, 61, 92), "fg": (255, 228, 238), "accent": (244, 154, 191)},
+}
+DEFAULT_AVATAR_IDS = list(AVATAR_THEMES.keys())
+
 
 def enable_high_dpi() -> None:
     try:
@@ -111,6 +121,7 @@ class PokerApp:
         self.name_input = TextInput(pygame.Rect(430, 346, 420, 48), f"Player{random.randint(100, 999)}")
         self.connection: PokerClientConnection | None = None
         self.player_name = ""
+        self.selected_avatar_id = DEFAULT_AVATAR_IDS[0]
         self.ui_state = "LOGIN"
         self.lobby_snapshot = poker_pb2.LobbySnapshot()
         self.snapshot = None
@@ -120,6 +131,7 @@ class PokerApp:
         self.running = True
         self.log_store = GameLogStore("runtime_logs", "client", "anonymous")
         self._last_state_key: tuple[object, ...] | None = None
+        self._login_avatar_hitboxes: list[tuple[pygame.Rect, str]] = []
         self._room_hitboxes: list[tuple[pygame.Rect, str]] = []
 
     def run(self) -> None:
@@ -140,10 +152,7 @@ class PokerApp:
             return
 
         if self.ui_state == "LOGIN":
-            self.address_input.handle(event)
-            self.name_input.handle(event)
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
-                self.dispatch("login")
+            self.handle_login_event(event)
         elif self.ui_state == "LOBBY":
             self.handle_lobby_event(event)
 
@@ -158,6 +167,17 @@ class PokerApp:
             if rect.collidepoint(event.pos):
                 self.selected_room_id = room_id
                 return
+
+    def handle_login_event(self, event: pygame.event.Event) -> None:
+        self.address_input.handle(event)
+        self.name_input.handle(event)
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            for rect, avatar_id in self.login_avatar_hitboxes():
+                if rect.collidepoint(event.pos):
+                    self.selected_avatar_id = avatar_id
+                    return
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
+            self.dispatch("login")
 
     def dispatch(self, action: str) -> None:
         if action == "login":
@@ -208,7 +228,9 @@ class PokerApp:
         address = self.address_input.value.strip() or "119.45.157.13:50051"
         self.player_name = name
         self.connection = PokerClientConnection(address)
-        self.connection.send(poker_pb2.ClientEvent(login=poker_pb2.Login(name=name)))
+        self.connection.send(
+            poker_pb2.ClientEvent(login=poker_pb2.Login(name=name, avatar_id=self.selected_avatar_id))
+        )
         self.status = f"正在连接 {address} ..."
 
     def move(self, move_type: int, amount: int = 0) -> None:
@@ -237,6 +259,7 @@ class PokerApp:
                 )
                 self.log_store = self.log_store.with_owner(server_event.login_accepted.player_id)
                 self.player_name = server_event.login_accepted.player_name
+                self.selected_avatar_id = server_event.login_accepted.avatar_id or self.selected_avatar_id
                 self.status = f"欢迎回来，{self.player_name}"
             elif payload == "lobby_snapshot":
                 self.lobby_snapshot = server_event.lobby_snapshot
@@ -416,16 +439,40 @@ class PokerApp:
             button.draw(self.screen, self.small)
 
     def draw_login(self) -> None:
-        width, _ = self.screen.get_size()
-        draw_centered(self.screen, self.title_font, "Texas Holdem Online", pygame.Rect(0, 130, width, 50), TEXT)
+        width, height = self.screen.get_size()
+        panel = pygame.Rect(max(72, width // 2 - 360), 120, min(720, width - 144), min(520, height - 180))
+        pygame.draw.rect(self.screen, PANEL, panel, border_radius=22)
+        pygame.draw.rect(self.screen, LINE, panel, width=1, border_radius=22)
+        draw_centered(self.screen, self.title_font, "Texas Holdem Online", pygame.Rect(panel.x, panel.y + 24, panel.w, 48), TEXT)
+        draw_centered(
+            self.screen,
+            self.small,
+            "选择昵称和默认头像后进入大厅",
+            pygame.Rect(panel.x, panel.y + 70, panel.w, 24),
+            MUTED,
+        )
         self.address_input.draw(self.screen, self.small, "服务器地址")
         self.name_input.draw(self.screen, self.small, "用户名")
-        draw_centered(self.screen, self.small, self.status, pygame.Rect(0, 490, width, 28), MUTED)
+        preview_rect = pygame.Rect(panel.x + 36, panel.y + 164, 120, 120)
+        draw_avatar(self.screen, preview_rect, self.selected_avatar_id, selected=True)
+        draw_centered(
+            self.screen,
+            self.small,
+            "当前头像",
+            pygame.Rect(preview_rect.x - 10, preview_rect.bottom + 8, preview_rect.w + 20, 20),
+            GOLD,
+        )
+        draw_text(self.screen, self.small, "默认头像", panel.x + 196, panel.y + 146, GOLD)
+        self._login_avatar_hitboxes = self.login_avatar_hitboxes()
+        for rect, avatar_id in self._login_avatar_hitboxes:
+            draw_avatar(self.screen, rect, avatar_id, selected=avatar_id == self.selected_avatar_id)
+        draw_centered(self.screen, self.small, self.status, pygame.Rect(0, panel.bottom - 48, width, 28), MUTED)
 
     def draw_lobby(self) -> None:
         width, height = self.screen.get_size()
-        draw_text(self.screen, self.title_font, "大厅列表", 28, 28, TEXT)
-        draw_text(self.screen, self.small, f"当前玩家: {self.player_name}", 30, 76, MUTED)
+        draw_avatar(self.screen, pygame.Rect(28, 30, 38, 38), self.selected_avatar_id)
+        draw_text(self.screen, self.title_font, "大厅列表", 78, 28, TEXT)
+        draw_text(self.screen, self.small, f"当前玩家: {self.player_name}", 78, 76, MUTED)
         draw_text(self.screen, self.small, self.status, 30, 102, MUTED)
 
         panel = pygame.Rect(28, 142, width - 56, height - 182)
@@ -484,7 +531,7 @@ class PokerApp:
         positions = seat_positions(table)
         for seat in self.snapshot.seats:
             x, y = positions[seat.seat_index]
-            self.draw_seat(seat, pygame.Rect(x, y, 162, 84))
+            self.draw_seat(seat, pygame.Rect(x, y, 178, 96))
 
         if self.snapshot.hero_cards:
             draw_cards(
@@ -520,9 +567,12 @@ class PokerApp:
             status.append(f"下注 {seat.committed}")
         detail = " / ".join(status) if status else ("可入座" if not seat.player_id else f"筹码 {seat.chips}")
         chips = f"筹码 {seat.chips}" if seat.player_id else ""
-        draw_text(self.screen, self.small, name, rect.x + 10, rect.y + 10, TEXT)
-        draw_text(self.screen, self.small, detail, rect.x + 10, rect.y + 36, GOLD if seat.is_turn else MUTED)
-        draw_text(self.screen, self.small, chips, rect.x + 10, rect.y + 60, MUTED)
+        avatar_rect = pygame.Rect(rect.x + 10, rect.y + 12, 42, 42)
+        avatar_id = seat.avatar_id if seat.avatar_id else DEFAULT_AVATAR_IDS[seat.seat_index % len(DEFAULT_AVATAR_IDS)]
+        draw_avatar(self.screen, avatar_rect, avatar_id, placeholder=not seat.player_id)
+        draw_text(self.screen, self.small, name, rect.x + 62, rect.y + 12, TEXT)
+        draw_text(self.screen, self.small, detail, rect.x + 62, rect.y + 38, GOLD if seat.is_turn else MUTED)
+        draw_text(self.screen, self.small, chips, rect.x + 62, rect.y + 62, MUTED)
 
     def draw_room_side_panel(self, width: int, height: int) -> None:
         panel = pygame.Rect(width - 278, 150, 252, height - 236)
@@ -551,8 +601,9 @@ class PokerApp:
                 status.append(f"座位 {member.seat_index + 1}")
             if member.ready:
                 status.append("已准备")
+            draw_avatar(self.screen, pygame.Rect(panel.x + 18, y - 2, 18, 18), member.avatar_id)
             line = f"{member.name} - {' / '.join(status) if status else '观战'}"
-            draw_text(self.screen, self.small, line, panel.x + 18, y, MUTED)
+            draw_text(self.screen, self.small, line, panel.x + 44, y, MUTED)
             y += 24
 
         y += 12
@@ -568,6 +619,19 @@ class PokerApp:
             for line in self.snapshot.log[-6:]:
                 draw_text(self.screen, self.small, line, panel.x + 18, y, MUTED)
                 y += 22
+
+    def login_avatar_hitboxes(self) -> list[tuple[pygame.Rect, str]]:
+        width, _ = self.screen.get_size()
+        panel_x = max(72, width // 2 - 360)
+        panel_y = 120
+        start_x = panel_x + 196
+        start_y = panel_y + 176
+        hitboxes: list[tuple[pygame.Rect, str]] = []
+        for index, avatar_id in enumerate(DEFAULT_AVATAR_IDS):
+            column = index % 3
+            row = index // 3
+            hitboxes.append((pygame.Rect(start_x + column * 88, start_y + row * 88, 64, 64), avatar_id))
+        return hitboxes
 
 
 def draw_cards(
@@ -590,6 +654,32 @@ def draw_cards(
             draw_centered(surface, font, label, rect, color)
         else:
             pygame.draw.rect(surface, (67, 103, 141), rect.inflate(-12, -12), border_radius=5)
+
+
+def draw_avatar(
+    surface: pygame.Surface,
+    rect: pygame.Rect,
+    avatar_id: str,
+    *,
+    selected: bool = False,
+    placeholder: bool = False,
+) -> None:
+    theme = AVATAR_THEMES.get(avatar_id or DEFAULT_AVATAR_IDS[0], AVATAR_THEMES[DEFAULT_AVATAR_IDS[0]])
+    frame = GOLD if selected else LINE
+    pygame.draw.rect(surface, theme["bg"], rect, border_radius=14)
+    pygame.draw.rect(surface, frame, rect, width=2 if selected else 1, border_radius=14)
+    inner = rect.inflate(-8, -8)
+    if placeholder:
+        pygame.draw.circle(surface, MUTED, (inner.centerx, inner.y + inner.h // 3), max(6, inner.w // 7), width=2)
+        pygame.draw.arc(surface, MUTED, (inner.x + 6, inner.centery - 2, inner.w - 12, inner.h // 2), 3.14, 0.0, 2)
+        return
+    pygame.draw.circle(surface, theme["accent"], (inner.centerx, inner.y + inner.h // 3), max(7, inner.w // 6))
+    pygame.draw.circle(surface, theme["fg"], (inner.centerx, inner.y + inner.h // 3 + 2), max(6, inner.w // 7))
+    body = pygame.Rect(inner.x + inner.w // 4, inner.y + inner.h // 2, inner.w // 2, inner.h // 3)
+    pygame.draw.rect(surface, theme["fg"], body, border_radius=10)
+    badge_w = max(14, rect.w // 3)
+    badge = pygame.Rect(rect.right - badge_w - 4, rect.bottom - badge_w - 4, badge_w, badge_w)
+    pygame.draw.ellipse(surface, theme["accent"], badge)
 
 
 def seat_positions(table: pygame.Rect) -> list[tuple[int, int]]:
