@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from concurrent import futures
 from queue import Queue
+import random
 import threading
 import time
 import uuid
@@ -10,10 +11,31 @@ import uuid
 import grpc
 
 from src.proto_gen import poker_pb2, poker_pb2_grpc
+from src.server.bots.controller import play_bot_turn
+from src.server.bots.models import BotProfile, ScoreWeights
 from src.server.chip_store import PlayerChipStore
-from src.server.room import PokerRoom, RoomStatus
+from src.server.room import PokerRoom, RoomStatus, STARTING_CHIPS
 from src.shared.cards import Card
 from src.shared.game_logging import GameLogStore
+
+
+BOT_PREFIX = "bot:"
+BOT_AVATAR_ID = "violet"
+DEFAULT_BOT_PROFILE = BotProfile(
+    name="guarded",
+    looseness=0.55,
+    aggression=0.52,
+    bluff_rate=0.09,
+    risk_tolerance=0.49,
+    randomness=0.0,
+)
+DEFAULT_BOT_WEIGHTS = ScoreWeights(
+    name="guarded",
+    call_opponent_aggression=0.24,
+    fold_recent_raise_pressure=0.16,
+    raise_opponent_fold_to_raise=0.24,
+    raise_opponent_vpip=-0.20,
+)
 
 
 class PokerService(poker_pb2_grpc.PokerServiceServicer):
@@ -26,6 +48,9 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.player_avatars: dict[str, str] = {}
         self.player_locations: dict[str, str] = {}
         self.player_chip_balances: dict[str, int] = {}
+        self.bot_profiles: dict[str, BotProfile] = {}
+        self.bot_weights: dict[str, ScoreWeights] = {}
+        self.bot_rngs: dict[str, random.Random] = {}
         self.lock = threading.RLock()
         self.server_logs = GameLogStore("runtime_logs", "server", "rooms")
         self.chip_store = PlayerChipStore("runtime_logs/player_chips.json")
@@ -200,11 +225,18 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         if not room:
             return
         room.leave(player_id)
+        if self.is_bot_player(player_id):
+            self.cleanup_bot(player_id)
         self.room_subscribers[room_id] = [entry for entry in self.room_subscribers[room_id] if entry[0] != player_id]
-        if room.is_empty():
+        if not self.human_players_in_room(room):
+            self.cleanup_room_bots(room)
+            self.room_subscribers.pop(room_id, None)
+            self.rooms.pop(room_id, None)
+        elif room.is_empty():
             self.room_subscribers.pop(room_id, None)
             self.rooms.pop(room_id, None)
         else:
+            self.promote_human_owner(room)
             self.broadcast_room(room_id)
 
     def attach_room_subscriber(self, room_id: str, player_id: str, outgoing: Queue[poker_pb2.ServerEvent]) -> None:
@@ -244,7 +276,11 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         elif payload == "player_move":
             room.player_move(player_id, poker_pb2.MoveType.Name(event.player_move.type), event.player_move.amount)
         elif payload == "chat_message":
-            room.log_line(f"{room.players.get(player_id, 'Player')}: {event.chat_message.text[:120]}")
+            message = event.chat_message.text.strip()
+            if message == "/addbot":
+                self.add_guarded_bot(player_id, room)
+            else:
+                room.log_line(f"{room.players.get(player_id, 'Player')}: {message[:120]}")
 
     def resolve_player_chips(self, player_id: str, player_name: str) -> int:
         return self.player_chip_balances.get(player_id, self.chip_store.get_or_create(player_name))
@@ -257,7 +293,13 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         while True:
             time.sleep(0.2)
             with self.lock:
-                dirty_rooms = [room_id for room_id, room in self.rooms.items() if room.update(time.monotonic())]
+                dirty_rooms: set[str] = set()
+                now = time.monotonic()
+                for room_id, room in list(self.rooms.items()):
+                    if room.update(now):
+                        dirty_rooms.add(room_id)
+                    if self.run_service_bots(room):
+                        dirty_rooms.add(room_id)
                 for room_id in dirty_rooms:
                     self.broadcast_room(room_id)
                     self.broadcast_lobby()
@@ -358,6 +400,78 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
 
     def server_event(self, request_id: str = "", **payload) -> poker_pb2.ServerEvent:
         return poker_pb2.ServerEvent(event_id=uuid.uuid4().hex, request_id=request_id, **payload)
+
+    def is_bot_player(self, player_id: str) -> bool:
+        return player_id.startswith(BOT_PREFIX)
+
+    def human_players_in_room(self, room: PokerRoom) -> list[str]:
+        return [player_id for player_id in room.players if not self.is_bot_player(player_id)]
+
+    def promote_human_owner(self, room: PokerRoom) -> None:
+        if room.owner_player_id and not self.is_bot_player(room.owner_player_id):
+            return
+        humans = self.human_players_in_room(room)
+        if humans:
+            room.owner_player_id = humans[0]
+
+    def cleanup_bot(self, bot_id: str) -> None:
+        self.player_names.pop(bot_id, None)
+        self.player_avatars.pop(bot_id, None)
+        self.player_locations.pop(bot_id, None)
+        self.player_chip_balances.pop(bot_id, None)
+        self.bot_profiles.pop(bot_id, None)
+        self.bot_weights.pop(bot_id, None)
+        self.bot_rngs.pop(bot_id, None)
+
+    def cleanup_room_bots(self, room: PokerRoom) -> None:
+        for player_id in list(room.players):
+            if self.is_bot_player(player_id):
+                self.cleanup_bot(player_id)
+
+    def add_guarded_bot(self, player_id: str, room: PokerRoom) -> None:
+        if player_id != room.owner_player_id:
+            raise ValueError("Only the room owner can add a bot")
+        if room.room_status != RoomStatus.OPEN or room.phase.name != "WAITING":
+            raise ValueError("Bots can only be added before a hand starts")
+        open_seat = next((seat.seat_index for seat in room.seats if not seat.player_id), -1)
+        if open_seat < 0:
+            raise ValueError("No open seat is available for a bot")
+
+        bot_number = sum(1 for member_id in room.players if self.is_bot_player(member_id)) + 1
+        bot_id = f"{BOT_PREFIX}{uuid.uuid4().hex[:8]}"
+        bot_name = f"Guard Bot {bot_number}"
+        self.player_names[bot_id] = bot_name
+        self.player_avatars[bot_id] = BOT_AVATAR_ID
+        self.player_chip_balances[bot_id] = STARTING_CHIPS
+        self.player_locations[bot_id] = room.room_id
+        self.bot_profiles[bot_id] = DEFAULT_BOT_PROFILE.updated(name=bot_name)
+        self.bot_weights[bot_id] = DEFAULT_BOT_WEIGHTS.updated(name=bot_name)
+        self.bot_rngs[bot_id] = random.Random(hash((room.room_id, bot_id)) & 0xFFFFFFFF)
+
+        room.join(bot_id, bot_name, BOT_AVATAR_ID)
+        room.sit(bot_id, open_seat)
+        room.set_ready(bot_id, True)
+        room.log_line(f"{bot_name} joined as a guarded bot", event_type="BOT")
+
+    def run_service_bots(self, room: PokerRoom) -> bool:
+        changed = False
+        safety = 0
+        while 0 <= room.active_seat < len(room.seats):
+            seat = room.seats[room.active_seat]
+            if not seat.player_id or not self.is_bot_player(seat.player_id):
+                break
+            play_bot_turn(
+                room,
+                seat.player_id,
+                profile=self.bot_profiles.get(seat.player_id, DEFAULT_BOT_PROFILE),
+                weights=self.bot_weights.get(seat.player_id, DEFAULT_BOT_WEIGHTS),
+                rng=self.bot_rngs.setdefault(seat.player_id, random.Random(0)),
+            )
+            changed = True
+            safety += 1
+            if safety >= 12:
+                break
+        return changed
 
 
 def card_to_proto(card: Card):

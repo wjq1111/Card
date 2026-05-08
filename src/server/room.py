@@ -62,6 +62,73 @@ class HandSummary:
     final_stacks: dict[int, int]
 
 
+@dataclass
+class PlayerBehaviorStats:
+    hands_played: int = 0
+    vpip_hands: int = 0
+    pfr_hands: int = 0
+    aggressive_actions: int = 0
+    passive_actions: int = 0
+    fold_to_raise_count: int = 0
+    fold_to_raise_opportunities: int = 0
+    showdown_hands: int = 0
+    recent_actions: list[str] = field(default_factory=list)
+
+    @property
+    def vpip_rate(self) -> float:
+        if self.hands_played <= 0:
+            return 0.0
+        return self.vpip_hands / self.hands_played
+
+    @property
+    def pfr_rate(self) -> float:
+        if self.hands_played <= 0:
+            return 0.0
+        return self.pfr_hands / self.hands_played
+
+    @property
+    def aggression_factor(self) -> float:
+        if self.passive_actions <= 0:
+            return float(self.aggressive_actions)
+        return self.aggressive_actions / self.passive_actions
+
+    @property
+    def fold_to_raise_rate(self) -> float:
+        if self.fold_to_raise_opportunities <= 0:
+            return 0.0
+        return self.fold_to_raise_count / self.fold_to_raise_opportunities
+
+    @property
+    def recent_raise_rate(self) -> float:
+        if not self.recent_actions:
+            return 0.0
+        raise_count = sum(1 for action in self.recent_actions if action in {"RAISE", "ALL_IN"})
+        return raise_count / len(self.recent_actions)
+
+
+@dataclass
+class HandBehaviorState:
+    voluntarily_put_money: bool = False
+    preflop_raised: bool = False
+    faced_raise: bool = False
+    reached_showdown: bool = False
+    last_action: str = ""
+    last_action_phase: str = ""
+
+
+@dataclass(frozen=True)
+class HandActionRecord:
+    player_id: str
+    seat_index: int
+    phase: str
+    move_type: str
+    amount: int
+    to_call: int
+    pot_before: int
+    current_bet_before: int
+    was_aggressive: bool
+
+
 class PokerRoom:
     def __init__(
         self,
@@ -104,11 +171,15 @@ class PokerRoom:
         self.rng = rng or random.Random()
         self.chip_resolver = chip_resolver
         self.chip_persistor = chip_persistor
+        self.player_behavior: dict[str, PlayerBehaviorStats] = {}
+        self.current_hand_behavior: dict[str, HandBehaviorState] = {}
+        self.hand_action_log: list[HandActionRecord] = []
 
     def join(self, player_id: str, name: str, avatar_id: str = "") -> None:
         cleaned_name = name.strip() or "Player"
         self.players[player_id] = cleaned_name
         self.player_avatars[player_id] = avatar_id.strip()
+        self.player_behavior.setdefault(player_id, PlayerBehaviorStats())
         if not self.owner_player_id:
             self.owner_player_id = player_id
         self.log_line(f"{cleaned_name} joined room", event_type="ROOM")
@@ -232,7 +303,7 @@ class PokerRoom:
         self.phase = Phase.PREFLOP
         self.room_status = RoomStatus.PLAYING
         self.hand_number += 1
-        self.deck = shuffled_deck()
+        self.deck = shuffled_deck(self.rng)
         self.board = []
         self.pot = 0
         self.current_bet = BIG_BLIND
@@ -243,6 +314,8 @@ class PokerRoom:
         self.starting_deadline_at = None
         self.hand_complete_at = None
         self._last_starting_value = None
+        self.hand_action_log = []
+        self.current_hand_behavior = {}
 
         for seat in self.seats:
             seat.committed = 0
@@ -253,6 +326,9 @@ class PokerRoom:
             seat.hole_cards = self.draw(2) if seat.player_id and seat.ready and seat.chips > 0 else []
 
         active_after_deal = [seat for seat in self.seats if seat.player_id and seat.ready and seat.hole_cards]
+        for seat in active_after_deal:
+            self.player_behavior.setdefault(seat.player_id, PlayerBehaviorStats()).hands_played += 1
+            self.current_hand_behavior[seat.player_id] = HandBehaviorState()
         small_blind, big_blind = self.blind_seats(active_after_deal)
         self.commit(self.seats[small_blind], SMALL_BLIND)
         self.commit(self.seats[big_blind], BIG_BLIND)
@@ -276,6 +352,12 @@ class PokerRoom:
         if seat.seat_index != self.active_seat:
             raise ValueError("It is not your turn")
 
+        phase_name = self.phase.value
+        to_call_before = max(0, self.current_bet - seat.committed)
+        pot_before = self.pot
+        current_bet_before = self.current_bet
+        target_bet = amount
+
         if move_type == "FOLD":
             seat.folded = True
             seat.acted_this_round = True
@@ -290,7 +372,6 @@ class PokerRoom:
             seat.acted_this_round = True
             self.log_line(f"{seat.name} called", event_type="ACTION", hand_id=self.current_hand_id)
         elif move_type == "RAISE":
-            target_bet = amount
             if target_bet < self.current_bet + self.min_raise:
                 raise ValueError("Raise is below the minimum")
             if target_bet > seat.committed + seat.chips:
@@ -315,6 +396,16 @@ class PokerRoom:
         else:
             raise ValueError("Unknown move")
 
+        self.record_player_action(
+            player_id,
+            seat,
+            move_type,
+            phase_name=phase_name,
+            amount=target_bet,
+            to_call_before=to_call_before,
+            pot_before=pot_before,
+            current_bet_before=current_bet_before,
+        )
         self.advance_after_action()
 
     def draw(self, count: int) -> list[Card]:
@@ -519,6 +610,63 @@ class PokerRoom:
                 data=data,
             )
 
+    def record_player_action(
+        self,
+        player_id: str,
+        seat: Seat,
+        move_type: str,
+        *,
+        phase_name: str,
+        amount: int,
+        to_call_before: int,
+        pot_before: int,
+        current_bet_before: int,
+    ) -> None:
+        stats = self.player_behavior.setdefault(player_id, PlayerBehaviorStats())
+        hand_state = self.current_hand_behavior.setdefault(player_id, HandBehaviorState())
+        was_aggressive = move_type == "RAISE" or (move_type == "ALL_IN" and seat.committed > current_bet_before)
+        was_passive = move_type == "CALL" or (move_type == "ALL_IN" and seat.committed <= current_bet_before)
+        voluntary_preflop = phase_name == Phase.PREFLOP.value and move_type in {"CALL", "RAISE", "ALL_IN"} and to_call_before > 0
+        preflop_raise = phase_name == Phase.PREFLOP.value and was_aggressive
+
+        if voluntary_preflop and not hand_state.voluntarily_put_money:
+            hand_state.voluntarily_put_money = True
+            stats.vpip_hands += 1
+        if preflop_raise and not hand_state.preflop_raised:
+            hand_state.preflop_raised = True
+            stats.pfr_hands += 1
+        if to_call_before > 0 and not hand_state.faced_raise:
+            hand_state.faced_raise = True
+            stats.fold_to_raise_opportunities += 1
+        if move_type == "FOLD" and to_call_before > 0:
+            stats.fold_to_raise_count += 1
+        if was_aggressive:
+            stats.aggressive_actions += 1
+        if was_passive:
+            stats.passive_actions += 1
+
+        hand_state.last_action = move_type
+        hand_state.last_action_phase = phase_name
+        stats.recent_actions.append(move_type)
+        del stats.recent_actions[:-12]
+        self.hand_action_log.append(
+            HandActionRecord(
+                player_id=player_id,
+                seat_index=seat.seat_index,
+                phase=phase_name,
+                move_type=move_type,
+                amount=amount,
+                to_call=to_call_before,
+                pot_before=pot_before,
+                current_bet_before=current_bet_before,
+                was_aggressive=was_aggressive,
+            )
+        )
+        del self.hand_action_log[:-80]
+
+    def behavior_for_player(self, player_id: str) -> PlayerBehaviorStats:
+        return self.player_behavior.setdefault(player_id, PlayerBehaviorStats())
+
     def hero_cards(self, player_id: str) -> Iterable[Card]:
         seat = self.find_seat(player_id)
         return seat.hole_cards if seat else []
@@ -547,6 +695,14 @@ class PokerRoom:
         return {seat.seat_index: seat.chips for seat in self.seats if seat.player_id}
 
     def finish_hand(self) -> None:
+        if self.last_hand_summary:
+            for seat_index in self.last_hand_summary.winner_seats:
+                seat = self.seats[seat_index]
+                if seat.player_id:
+                    self.current_hand_behavior.setdefault(seat.player_id, HandBehaviorState()).reached_showdown = True
+            for seat in self.seats:
+                if seat.player_id and seat.seat_index in self.last_hand_summary.hand_names:
+                    self.player_behavior.setdefault(seat.player_id, PlayerBehaviorStats()).showdown_hands += 1
         self.phase = Phase.HAND_COMPLETE
         self.room_status = RoomStatus.PLAYING
         self.active_seat = -1
@@ -573,6 +729,8 @@ class PokerRoom:
         self.starting_deadline_at = None
         self._last_starting_value = None
         self.current_hand_id = ""
+        self.current_hand_behavior = {}
+        self.hand_action_log = []
         for seat in self.seats:
             seat.committed = 0
             seat.hand_committed = 0

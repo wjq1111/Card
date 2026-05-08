@@ -14,7 +14,7 @@ class Card:
     rank: str
 
 
-def shuffled_deck() -> list[Card]:
+def shuffled_deck(rng: random.Random | None = None) -> list[Card]:
     deck = [Card(suit=suit, rank=rank) for suit in SUITS for rank in RANKS]
-    random.shuffle(deck)
+    (rng or random).shuffle(deck)
     return deck
