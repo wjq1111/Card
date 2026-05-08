@@ -4,6 +4,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..")
+$ArtifactsRoot = Join-Path $Root "artifacts\pyinstaller"
+$SourceRoot = Join-Path $Root "src"
 Set-Location $Root
 
 $Python = Join-Path $Root ".venv\Scripts\python.exe"
@@ -22,12 +24,16 @@ if ($LASTEXITCODE -ne 0) {
     --onefile `
     --windowed `
     --name $Name `
+    --paths $SourceRoot `
+    --distpath (Join-Path $ArtifactsRoot "dist") `
+    --workpath (Join-Path $ArtifactsRoot "build") `
+    --specpath $ArtifactsRoot `
     --collect-submodules grpc `
     --collect-submodules google.protobuf `
     --collect-submodules proto_gen `
-    client\main.py
+    src\client\main.py
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "Build complete: dist\$Name.exe"
+Write-Host "Build complete: artifacts\pyinstaller\dist\$Name.exe"

@@ -4,8 +4,6 @@ __pycache__
 .env
 *.log
 runtime_logs
-proto_gen
-build
-dist
-*.spec
+artifacts/pyinstaller/build
+artifacts/pyinstaller/dist
 deploy.password.txt

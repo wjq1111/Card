@@ -14,12 +14,12 @@ Use this skill before `texas-holdem-release-flow`. Treat requirement delivery as
    - Map it to the authoritative artifacts:
      - `docs/product_requirements.md` for product behavior and acceptance criteria
      - `docs/poker-rule-test-cases.md` for natural-language gameplay rules
-     - `proto/poker.proto` when RPCs or message shapes change
+     - `src/proto/poker.proto` when RPCs or message shapes change
    - If the request conflicts with the docs, update the docs first or in the same change before touching implementation.
 
 2. Build an impact list
    - List affected files in four buckets: requirements docs, implementation, tests, validation commands.
-   - Inspect the likely change surface across `server/`, `client/`, `shared/`, `tests/`, `tools/`, and `proto/`.
+   - Inspect the likely change surface across `src/server/`, `src/client/`, `src/shared/`, `src/proto/`, `tests/`, and `tools/`.
    - Treat "no doc change" and "no test change" as claims that need a short justification.
 
 3. Update docs and executable specs
@@ -48,10 +48,10 @@ python tools\generate_grpc.py
    - Run syntax and baseline validation for non-trivial changes:
 
 ```powershell
-python -m compileall server client shared tools tests
+python -m compileall src tools tests
 ```
 
-   - Run `python tools\generate_grpc.py` after `proto/` changes.
+   - Run `python tools\generate_grpc.py` after `src/proto/` changes.
    - Run `python tools\check_rules.py` after gameplay, action-flow, hand-evaluation, or settlement changes.
    - Run targeted tests for the touched area.
    - Run the full test suite when the change is broad or touches shared gameplay state:

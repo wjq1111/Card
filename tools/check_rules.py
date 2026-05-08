@@ -6,24 +6,27 @@ import unittest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+SRC_ROOT = REPO_ROOT / "src"
+for path in (SRC_ROOT, REPO_ROOT):
+    path_text = str(path)
+    if path_text not in sys.path:
+        sys.path.insert(0, path_text)
 
 
 RULE_CASES = [
-    ("RC-01", "少于两名准备玩家时不能开局"),
-    ("RC-02", "单挑时庄家下小盲并先行动"),
-    ("RC-03", "面对下注时不能过牌"),
-    ("RC-04", "加注不能低于最小加注额"),
-    ("RC-05", "短码全下不会错误改变最小加注额"),
-    ("RC-06", "其余玩家弃牌后应直接赢池"),
-    ("RC-07", "所有可行动玩家完成本轮动作后才进入下一街"),
-    ("RC-08", "七张牌中自动选出最优五张"),
-    ("RC-09", "A-2-3-4-5 识别为轮顺"),
-    ("RC-10", "同对子时由踢脚决定胜负"),
-    ("RC-11", "边池只允许有资格玩家争夺"),
-    ("RC-12", "弃牌玩家保留贡献但不能赢池"),
-    ("RC-13", "平分底池时筹码变化守恒"),
+    ("RC-01", "Cannot start a hand with fewer than two ready players."),
+    ("RC-02", "Heads-up dealer posts the small blind and acts first preflop."),
+    ("RC-03", "A player cannot check while facing a bet."),
+    ("RC-04", "Raise amount cannot be below the minimum raise."),
+    ("RC-05", "Short all-in raises the call line without reducing min-raise."),
+    ("RC-06", "Last live player wins the pot without showdown."),
+    ("RC-07", "A street advances only after all actionable players finish."),
+    ("RC-08", "Best five cards are selected automatically from seven."),
+    ("RC-09", "A-2-3-4-5 is recognized as a wheel straight."),
+    ("RC-10", "Kickers break ties for matching made hands."),
+    ("RC-11", "Side pots are contested only by eligible players."),
+    ("RC-12", "Folded players keep contributions but cannot win."),
+    ("RC-13", "Split pots preserve total chip balance."),
 ]
 
 TEST_MODULES = [
