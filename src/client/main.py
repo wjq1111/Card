@@ -16,10 +16,10 @@ from src.proto_gen import poker_pb2
 from src.shared.game_logging import GameLogStore
 
 
-WIDTH = 1280
-HEIGHT = 780
+WIDTH = 1920
+HEIGHT = 1080
 FPS = 60
-SIDE_PANEL_WIDTH = 252
+SIDE_PANEL_WIDTH = 320
 LAYOUT_GAP = 26
 MIN_TABLE_WIDTH = 430
 MIN_TABLE_HEIGHT = 280
@@ -219,6 +219,8 @@ class PokerApp:
         self.snapshot = None
         self.selected_room_id = ""
         self.status = "请输入用户名后进入大厅。"
+        self.tip_message = self.status
+        self.tip_expires_at = time.monotonic() + 2.0
         self.last_heartbeat = time.monotonic()
         self.running = True
         self.log_store = GameLogStore("runtime_logs", "client", "anonymous")
@@ -232,7 +234,6 @@ class PokerApp:
         self._ui_config_mtime: float | None = None
         self._last_ui_config_check = 0.0
         self.raise_input = TextInput(pygame.Rect(0, 0, 116, 40), "", max_length=6, allowed_chars="0123456789")
-        self._card_image_cache: dict[tuple[str, int, int], pygame.Surface] = {}
         self._load_ui_config(force=True)
 
     def run(self) -> None:
@@ -254,7 +255,7 @@ class PokerApp:
             return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_F1:
             self.ui_debug = not self.ui_debug
-            self.status = f"UI 调试模式{'开启' if self.ui_debug else '关闭'}"
+            self.set_status(f"UI 调试模式{'开启' if self.ui_debug else '关闭'}")
             return
         if event.type == pygame.KEYDOWN and event.key == pygame.K_F9 and self.ui_state == "ROOM":
             self.dispatch("gm_add_chips")
@@ -351,7 +352,7 @@ class PokerApp:
             self.send(poker_pb2.ClientEvent(start_hand=poker_pb2.StartHand()))
         elif action == "add_bot":
             self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addbot")))
-            self.status = "已请求添加 guarded bot。"
+            self.set_status("已请求添加机器人。")
         elif action == "fold":
             self.move(poker_pb2.FOLD)
         elif action == "check":
@@ -366,12 +367,12 @@ class PokerApp:
             self.move(poker_pb2.ALL_IN)
         elif action == "gm_add_chips":
             self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/gm addchips 2000")))
-            self.status = "已请求 GM 给自己增加 2000 筹码。"
+            self.set_status("已请求 GM 给自己增加 2000 筹码。")
 
     def login(self) -> None:
         name = self.name_input.value.strip()
         if not name:
-            self.status = "用户名不能为空。"
+            self.set_status("用户名不能为空。")
             return
         address = self.address_input.value.strip() or "119.45.157.13:50051"
         self.player_name = name
@@ -379,16 +380,21 @@ class PokerApp:
         self.connection.send(
             poker_pb2.ClientEvent(login=poker_pb2.Login(name=name, avatar_id=self.selected_avatar_id))
         )
-        self.status = f"正在连接 {address}..."
+        self.set_status(f"正在连接 {address}...", duration=2.5)
 
     def move(self, move_type: int, amount: int = 0) -> None:
         self.send(poker_pb2.ClientEvent(player_move=poker_pb2.PlayerMove(type=move_type, amount=amount)))
 
     def send(self, event: poker_pb2.ClientEvent) -> None:
         if not self.connection:
-            self.status = "尚未连接服务器。"
+            self.set_status("尚未连接服务器。")
             return
         self.connection.send(event)
+
+    def set_status(self, message: str, *, duration: float = 2.0) -> None:
+        self.status = message
+        self.tip_message = message
+        self.tip_expires_at = time.monotonic() + duration
 
     def update_network(self) -> None:
         if not self.connection:
@@ -408,7 +414,7 @@ class PokerApp:
                 self.log_store = self.log_store.with_owner(server_event.login_accepted.player_id)
                 self.player_name = server_event.login_accepted.player_name
                 self.selected_avatar_id = server_event.login_accepted.avatar_id or self.selected_avatar_id
-                self.status = f"欢迎回来，{self.player_name}。"
+                self.set_status(f"欢迎回来，{self.player_name}。")
             elif payload == "lobby_snapshot":
                 self.lobby_snapshot = server_event.lobby_snapshot
                 self.ui_state = "LOBBY"
@@ -417,19 +423,19 @@ class PokerApp:
                     room.room_id == self.selected_room_id for room in self.lobby_snapshot.rooms
                 ):
                     self.selected_room_id = ""
-                self.status = f"大厅房间数：{len(self.lobby_snapshot.rooms)}"
+                self.set_status(f"大厅房间数：{len(self.lobby_snapshot.rooms)}")
             elif payload == "joined":
-                self.status = f"已进入房间 {server_event.joined.room_id}"
+                self.set_status(f"已进入房间 {server_event.joined.room_id}")
             elif payload == "snapshot":
                 self.snapshot = server_event.snapshot
                 self.ui_state = "ROOM"
                 self.log_snapshot(server_event.snapshot)
             elif payload == "error":
                 prefix = f"{server_event.error.code}: " if server_event.error.code else ""
-                self.status = prefix + server_event.error.message
+                self.set_status(prefix + server_event.error.message, duration=2.5)
             elif payload == "server_notice":
                 if server_event.server_notice.message != "heartbeat_ack":
-                    self.status = server_event.server_notice.message
+                    self.set_status(server_event.server_notice.message)
 
     def log_snapshot(self, snapshot) -> None:
         state_key = (
@@ -577,7 +583,7 @@ class PokerApp:
             return None
         hero_seat = self.hero_seat()
         if not hero_seat:
-            self.status = "你还没有入座。"
+            self.set_status("你还没有入座。")
             return None
         if not self.raise_input.value.strip():
             amount = self.default_raise_amount()
@@ -586,15 +592,15 @@ class PokerApp:
             try:
                 amount = int(self.raise_input.value)
             except ValueError:
-                self.status = "加注金额必须是数字。"
+                self.set_status("加注金额必须是数字。")
                 return None
         min_target = self.default_raise_amount()
         max_target = self.max_raise_amount()
         if amount > max_target:
-            self.status = f"加注目标不能超过 {max_target}。"
+            self.set_status(f"加注目标不能超过 {max_target}。")
             return None
         if amount < min_target:
-            self.status = f"加注目标至少为 {min_target}。"
+            self.set_status(f"加注目标至少为 {min_target}。")
             return None
         return amount
 
@@ -625,6 +631,7 @@ class PokerApp:
             self.draw_lobby()
         else:
             self.draw_room()
+        self.draw_top_tip()
         for button in buttons:
             button.draw(self.screen, self.small)
 
@@ -669,7 +676,6 @@ class PokerApp:
         draw_avatar(self.screen, pygame.Rect(28, 30, 38, 38), self.selected_avatar_id)
         draw_text(self.screen, self.title_font, "大厅列表", 78, 28, TEXT)
         draw_text(self.screen, self.small, f"当前玩家：{self.player_name}", 78, 76, MUTED)
-        draw_text_clipped(self.screen, self.small, self.status, 30, 102, width - 60, MUTED)
 
         panel = pygame.Rect(28, 142, width - 56, height - 182)
         pygame.draw.rect(self.screen, PANEL, panel, border_radius=12)
@@ -705,7 +711,6 @@ class PokerApp:
         draw_text(self.screen, self.title_font, self.snapshot.room_id, 26, 28, TEXT)
         owner_name = next((member.name for member in self.snapshot.members if member.is_owner), "-")
         draw_text(self.screen, self.small, f"房主：{owner_name}", 28, 78, MUTED)
-        draw_text_clipped(self.screen, self.small, self.status, 28, 104, width - 56, MUTED)
 
         layout = self.room_layout(width, height)
         table = layout["table"]
@@ -747,6 +752,11 @@ class PokerApp:
 
     def draw_seat(self, seat, rect: pygame.Rect, table: pygame.Rect) -> None:
         is_hero = bool(self.connection and seat.player_id == self.connection.player_id)
+        show_ready_status = bool(
+            self.snapshot
+            and self.snapshot.room_status == poker_pb2.OPEN
+            and self.snapshot.phase in (poker_pb2.WAITING, poker_pb2.HAND_COMPLETE)
+        )
         fill = (48, 57, 53) if seat.player_id else (29, 40, 43)
         if seat.is_turn:
             fill = (85, 70, 33)
@@ -760,7 +770,7 @@ class PokerApp:
             status.append("房主")
         if seat.is_dealer:
             status.append("庄位")
-        if seat.ready:
+        if show_ready_status and seat.ready:
             status.append("已准备")
         if seat.folded:
             status.append("弃牌")
@@ -769,18 +779,18 @@ class PokerApp:
         detail = " / ".join(status) if status else ("点击入座" if not seat.player_id else "待行动")
         chips = f"筹码 {seat.chips}" if seat.player_id else ""
 
-        avatar_size = max(36, min(44, rect.height - 22))
+        avatar_size = max(38, min(48, rect.height - 22))
         avatar_rect = pygame.Rect(rect.x + 12, rect.y + 10, avatar_size, avatar_size)
         avatar_id = seat.avatar_id if seat.avatar_id else DEFAULT_AVATAR_IDS[seat.seat_index % len(DEFAULT_AVATAR_IDS)]
         draw_avatar(self.screen, avatar_rect, avatar_id, placeholder=not seat.player_id)
 
-        card_w = max(30, min(38, rect.width // 5))
+        card_w = max(34, min(44, rect.width // 5))
         card_h = int(card_w * 1.42)
-        card_gap = card_w - 8
-        cards_x = rect.right - card_w * 2 - 20
-        cards_y = rect.y + rect.height - card_h - 10
+        card_gap = card_w - 10
+        cards_x = rect.right - card_w * 2 - 24
+        cards_y = rect.y + rect.height - card_h - 12
         text_x = avatar_rect.right + 10
-        max_width = max(48, cards_x - text_x - 10)
+        max_width = max(72, cards_x - text_x - 8)
         draw_text_clipped(self.screen, self.small, name, text_x, rect.y + 12, max_width, TEXT)
         draw_text_clipped(self.screen, self.small, chips, text_x, rect.y + 38, max_width, GOLD if is_hero else TEXT)
         draw_text_clipped(self.screen, self.small, detail, text_x, rect.y + 62, max_width, GOLD if seat.is_turn else MUTED)
@@ -821,7 +831,29 @@ class PokerApp:
                 MUTED,
             )
 
+    def draw_top_tip(self) -> None:
+        if not self.tip_message or time.monotonic() >= self.tip_expires_at:
+            return
+        width, _ = self.screen.get_size()
+        max_width = min(680, width - 80)
+        lines = wrap_text_lines(self.small, self.tip_message, max_width - 36, max_lines=3)
+        line_height = self.small.get_linesize()
+        bubble_height = 20 + len(lines) * line_height
+        bubble = pygame.Rect(0, 18, max_width, bubble_height)
+        bubble.centerx = width // 2
+        pygame.draw.rect(self.screen, SHADOW, bubble.move(0, 4), border_radius=18)
+        pygame.draw.rect(self.screen, (23, 33, 40), bubble, border_radius=18)
+        pygame.draw.rect(self.screen, GOLD, bubble, width=1, border_radius=18)
+        y = bubble.y + 10
+        for line in lines:
+            draw_centered(self.screen, self.small, line, pygame.Rect(bubble.x + 18, y, bubble.width - 36, line_height), TEXT)
+            y += line_height
+
     def draw_room_side_panel(self, panel: pygame.Rect) -> None:
+        show_ready_status = bool(
+            self.snapshot.room_status == poker_pb2.OPEN
+            and self.snapshot.phase in (poker_pb2.WAITING, poker_pb2.HAND_COMPLETE)
+        )
         pygame.draw.rect(self.screen, PANEL, panel, border_radius=12)
         pygame.draw.rect(self.screen, LINE, panel, width=1, border_radius=12)
         draw_text(self.screen, self.font, "房间信息", panel.x + 18, panel.y + 14, TEXT)
@@ -832,7 +864,7 @@ class PokerApp:
             f"手局数：{self.snapshot.hand_number}",
         ]
         if self.snapshot.starting_countdown_seconds > 0:
-            info.append(f"倒计时：{self.snapshot.starting_countdown_seconds}s")
+            info.append(f"倒计时：{self.snapshot.starting_countdown_seconds} 秒")
         for index, line in enumerate(info):
             draw_text_clipped(self.screen, self.small, line, panel.x + 18, panel.y + 54 + index * 24, panel.width - 36, MUTED)
 
@@ -845,7 +877,7 @@ class PokerApp:
                 status.append("房主")
             if member.seat_index >= 0:
                 status.append(f"座位 {member.seat_index + 1}")
-            if member.ready:
+            if show_ready_status and member.ready:
                 status.append("已准备")
             draw_avatar(self.screen, pygame.Rect(panel.x + 18, y - 2, 18, 18), member.avatar_id)
             line = f"{member.name} - {' / '.join(status) if status else '观战'}"
@@ -862,9 +894,20 @@ class PokerApp:
         else:
             draw_text(self.screen, self.small, "最近日志", panel.x + 18, y, GOLD)
             y += 26
-            for line in self.snapshot.log[-6:]:
-                draw_text_clipped(self.screen, self.small, line, panel.x + 18, y, panel.width - 36, MUTED)
-                y += 22
+            log_area = pygame.Rect(panel.x + 18, y, panel.width - 36, panel.bottom - y - 16)
+            for line in self.snapshot.log[-5:]:
+                localized = localize_log_line(line)
+                used = draw_wrapped_text_block(
+                    self.screen,
+                    self.small,
+                    localized,
+                    pygame.Rect(log_area.x, y, log_area.width, log_area.bottom - y),
+                    MUTED,
+                    max_lines=3,
+                )
+                y += used + 10
+                if y >= log_area.bottom:
+                    break
 
     def login_avatar_hitboxes(self) -> list[tuple[pygame.Rect, str]]:
         layout = self.login_layout()
@@ -992,7 +1035,7 @@ class PokerApp:
             stat = UI_CONFIG_PATH.stat()
         except FileNotFoundError:
             if force:
-                self.status = f"UI 配置文件缺失: {UI_CONFIG_PATH.name}"
+                self.set_status(f"UI 配置文件缺失: {UI_CONFIG_PATH.name}")
             return
         if not force and self._ui_config_mtime == stat.st_mtime:
             return
@@ -1002,9 +1045,9 @@ class PokerApp:
             self.ui_config = merge_login_ui_config(default_login_ui_config(), loaded)
             self._ui_config_mtime = stat.st_mtime
             if self.ui_debug:
-                self.status = f"UI 配置已重载: {UI_CONFIG_PATH.name}"
+                self.set_status(f"UI 配置已重载: {UI_CONFIG_PATH.name}")
         except Exception as exc:
-            self.status = f"UI 配置读取失败: {exc}"
+            self.set_status(f"UI 配置读取失败: {exc}")
 
     def draw_login_debug_overlay(self, layout: dict[str, pygame.Rect]) -> None:
         debug_items = [
@@ -1097,7 +1140,7 @@ class PokerApp:
 
     def room_layout(self, width: int, height: int) -> dict[str, pygame.Rect]:
         top = 150
-        bottom_margin = 98
+        bottom_margin = 122
         available_height = max(260, height - top - bottom_margin)
         side_panel = pygame.Rect(width - SIDE_PANEL_WIDTH - 26, top, SIDE_PANEL_WIDTH, available_height)
         table_width = width - side_panel.width - 3 * LAYOUT_GAP
@@ -1300,8 +1343,12 @@ def seat_bet_rect(rect: pygame.Rect, table: pygame.Rect) -> pygame.Rect:
 
 
 def seat_rect_size(table: pygame.Rect) -> tuple[int, int]:
+    if table.width >= 1150 and table.height >= 560:
+        return (278, 142)
+    if table.width >= 900 and table.height >= 460:
+        return (242, 128)
     if table.width >= 720 and table.height >= 420:
-        return (212, 112)
+        return (220, 118)
     if table.width >= 600:
         return (188, 102)
     return (164, 94)
@@ -1317,6 +1364,117 @@ def lobby_columns(panel: pygame.Rect) -> list[int]:
     usable_width = panel.width - 40
     fractions = [0.0, 0.42, 0.64, 0.78, 0.88]
     return [panel.x + 20 + int(usable_width * fraction) for fraction in fractions]
+
+
+def wrap_text_lines(font: pygame.font.Font, text: str, max_width: int, *, max_lines: int | None = None) -> list[str]:
+    if max_width <= 0:
+        return []
+    parts = [part for part in text.replace("\r", "").split("\n") if part] or [text]
+    lines: list[str] = []
+    for part in parts:
+        current = ""
+        for char in part:
+            candidate = f"{current}{char}"
+            if current and font.size(candidate)[0] > max_width:
+                lines.append(current)
+                current = char
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+    if max_lines is not None and len(lines) > max_lines:
+        lines = lines[:max_lines]
+        suffix = "..."
+        while lines[-1] and font.size(lines[-1] + suffix)[0] > max_width:
+            lines[-1] = lines[-1][:-1]
+        lines[-1] = lines[-1] + suffix if lines[-1] else suffix
+    return lines
+
+
+def draw_wrapped_text_block(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    text: str,
+    rect: pygame.Rect,
+    color,
+    *,
+    max_lines: int | None = None,
+) -> int:
+    lines = wrap_text_lines(font, text, rect.width, max_lines=max_lines)
+    line_height = font.get_linesize()
+    y = rect.y
+    for line in lines:
+        draw_text(surface, font, line, rect.x, y, color)
+        y += line_height
+        if y > rect.bottom:
+            break
+    return len(lines) * line_height
+
+
+def localize_log_line(text: str) -> str:
+    line = text.strip()
+    replacements = [
+        ("joined room", "进入房间"),
+        ("left room", "离开房间"),
+        ("stood up", "离座"),
+        ("folded", "弃牌"),
+        ("checked", "过牌"),
+        ("called", "跟注"),
+        ("moved all in", "全下"),
+        ("started the game countdown", "发起开局倒计时"),
+        ("joined as a guarded bot", "作为机器人加入"),
+        ("Table reset for the next hand", "牌桌已重置，等待下一手"),
+    ]
+    for source, target in replacements:
+        if source in line:
+            return line.replace(source, target)
+    if "sat down at seat" in line:
+        name, seat_no = line.split(" sat down at seat ", 1)
+        return f"{name} 入座 {seat_no} 号位"
+    if "changed to seat" in line:
+        name, seat_no = line.split(" changed to seat ", 1)
+        return f"{name} 换到 {seat_no} 号位"
+    if "is ready" in line:
+        return line.replace(" is ready", " 已准备")
+    if "is not ready" in line:
+        return line.replace(" is not ready", " 取消准备")
+    if "raised to" in line:
+        name, amount = line.split(" raised to ", 1)
+        return f"{name} 加注到 {amount}"
+    if "won with" in line:
+        name, hand_name = line.split(" won with ", 1)
+        return f"{name} 以 {localize_hand_name(hand_name)} 获胜"
+    if "won " in line:
+        name, amount = line.split(" won ", 1)
+        return f"{name} 赢得 {amount} 筹码"
+    if line.endswith("dealt"):
+        street = line.replace(" dealt", "")
+        return {
+            "FLOP": "已发翻牌",
+            "TURN": "已发转牌",
+            "RIVER": "已发河牌",
+        }.get(street, line)
+    if line.startswith("Hand ") and line.endswith(" started"):
+        hand_number = line[5:-8].strip()
+        return f"第 {hand_number} 手开始"
+    if "bot chose" in line:
+        return line.replace("bot chose", "机器人选择")
+    return line
+
+
+def localize_hand_name(hand_name: str) -> str:
+    return {
+        "High Card": "高牌",
+        "One Pair": "一对",
+        "Two Pair": "两对",
+        "Three of a Kind": "三条",
+        "Straight": "顺子",
+        "Flush": "同花",
+        "Full House": "葫芦",
+        "Four of a Kind": "四条",
+        "Straight Flush": "同花顺",
+        "Royal Flush": "皇家同花顺",
+    }.get(hand_name, hand_name)
 
 
 def draw_text(surface: pygame.Surface, font: pygame.font.Font, text: str, x: int, y: int, color) -> None:

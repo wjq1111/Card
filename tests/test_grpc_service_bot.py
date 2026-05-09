@@ -44,7 +44,11 @@ class PokerServiceBotTest(unittest.TestCase):
         bot_id = bot_ids[0]
         room.active_seat = room.require_seat(bot_id).seat_index
 
-        changed = service.run_service_bots(room)
+        changed = service.run_service_bots(room, now=10.0)
+
+        self.assertFalse(changed)
+
+        changed = service.run_service_bots(room, now=11.2)
 
         self.assertTrue(changed)
         self.assertNotEqual(room.active_seat, room.require_seat(bot_id).seat_index)

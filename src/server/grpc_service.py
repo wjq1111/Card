@@ -51,6 +51,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.bot_profiles: dict[str, BotProfile] = {}
         self.bot_weights: dict[str, ScoreWeights] = {}
         self.bot_rngs: dict[str, random.Random] = {}
+        self.bot_action_deadlines: dict[str, tuple[tuple[object, ...], float]] = {}
         self.lock = threading.RLock()
         self.server_logs = GameLogStore("runtime_logs", "server", "rooms")
         self.chip_store = PlayerChipStore("runtime_logs/player_chips.json")
@@ -315,7 +316,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
                 for room_id, room in list(self.rooms.items()):
                     if room.update(now):
                         dirty_rooms.add(room_id)
-                    if self.run_service_bots(room):
+                    if self.run_service_bots(room, now):
                         dirty_rooms.add(room_id)
                 for room_id in dirty_rooms:
                     self.broadcast_room(room_id)
@@ -439,6 +440,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.bot_profiles.pop(bot_id, None)
         self.bot_weights.pop(bot_id, None)
         self.bot_rngs.pop(bot_id, None)
+        self.bot_action_deadlines.pop(bot_id, None)
 
     def cleanup_room_bots(self, room: PokerRoom) -> None:
         for player_id in list(room.players):
@@ -470,13 +472,31 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         room.set_ready(bot_id, True)
         room.log_line(f"{bot_name} joined as a guarded bot", event_type="BOT")
 
-    def run_service_bots(self, room: PokerRoom) -> bool:
+    def run_service_bots(self, room: PokerRoom, now: float | None = None) -> bool:
+        now = time.monotonic() if now is None else now
         changed = False
         safety = 0
         while 0 <= room.active_seat < len(room.seats):
             seat = room.seats[room.active_seat]
             if not seat.player_id or not self.is_bot_player(seat.player_id):
                 break
+            turn_key = (
+                room.room_id,
+                room.current_hand_id,
+                room.phase.value,
+                room.active_seat,
+                room.current_bet,
+                seat.committed,
+                seat.hand_committed,
+                seat.chips,
+            )
+            tracked = self.bot_action_deadlines.get(seat.player_id)
+            if tracked is None or tracked[0] != turn_key:
+                self.bot_action_deadlines[seat.player_id] = (turn_key, now + 1.0)
+                break
+            if now < tracked[1]:
+                break
+            self.bot_action_deadlines.pop(seat.player_id, None)
             play_bot_turn(
                 room,
                 seat.player_id,
