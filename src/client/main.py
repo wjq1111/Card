@@ -39,6 +39,7 @@ LINE = (54, 74, 78)
 CARD = (247, 242, 226)
 CARD_RED = (184, 43, 58)
 CARD_BLACK = (30, 36, 39)
+SHADOW = (7, 12, 15)
 
 AVATAR_THEMES = {
     "ember": {"bg": (137, 58, 42), "fg": (255, 223, 183), "accent": (247, 166, 93)},
@@ -50,6 +51,29 @@ AVATAR_THEMES = {
 }
 DEFAULT_AVATAR_IDS = list(AVATAR_THEMES.keys())
 UI_CONFIG_PATH = Path(__file__).resolve().parents[2] / "assets" / "ui" / "login_layout.json"
+CARD_ASSET_DIR = Path(__file__).resolve().parents[2] / "assets" / "images" / "cards"
+CARD_RANK_NAMES = {
+    poker_pb2.TWO: "2",
+    poker_pb2.THREE: "3",
+    poker_pb2.FOUR: "4",
+    poker_pb2.FIVE: "5",
+    poker_pb2.SIX: "6",
+    poker_pb2.SEVEN: "7",
+    poker_pb2.EIGHT: "8",
+    poker_pb2.NINE: "9",
+    poker_pb2.TEN: "10",
+    poker_pb2.JACK: "j",
+    poker_pb2.QUEEN: "q",
+    poker_pb2.KING: "k",
+    poker_pb2.ACE: "a",
+}
+CARD_SUIT_NAMES = {
+    poker_pb2.CLUBS: "clubs",
+    poker_pb2.DIAMONDS: "diamonds",
+    poker_pb2.HEARTS: "hearts",
+    poker_pb2.SPADES: "spades",
+}
+_CARD_IMAGE_CACHE: dict[tuple[str, int, int], pygame.Surface] = {}
 
 
 def default_login_ui_config() -> dict[str, object]:
@@ -140,10 +164,12 @@ class Button:
 
 
 class TextInput:
-    def __init__(self, rect: pygame.Rect, value: str) -> None:
+    def __init__(self, rect: pygame.Rect, value: str, *, max_length: int = 32, allowed_chars: str | None = None) -> None:
         self.rect = rect
         self.value = value
         self.active = False
+        self.max_length = max_length
+        self.allowed_chars = allowed_chars
 
     def handle(self, event: pygame.event.Event) -> None:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -153,7 +179,11 @@ class TextInput:
                 self.value = self.value[:-1]
             elif event.key in (pygame.K_RETURN, pygame.K_ESCAPE, pygame.K_TAB):
                 self.active = False
-            elif event.unicode and len(self.value) < 32:
+            elif (
+                event.unicode
+                and len(self.value) < self.max_length
+                and (self.allowed_chars is None or event.unicode in self.allowed_chars)
+            ):
                 self.value += event.unicode
 
     def draw(self, surface: pygame.Surface, font: pygame.font.Font, label: str) -> None:
@@ -195,11 +225,14 @@ class PokerApp:
         self._last_state_key: tuple[object, ...] | None = None
         self._login_avatar_hitboxes: list[tuple[pygame.Rect, str]] = []
         self._room_hitboxes: list[tuple[pygame.Rect, str]] = []
+        self._seat_hitboxes: list[tuple[pygame.Rect, int]] = []
         self._avatar_picker_open = False
         self.ui_debug = ui_debug
         self.ui_config = default_login_ui_config()
         self._ui_config_mtime: float | None = None
         self._last_ui_config_check = 0.0
+        self.raise_input = TextInput(pygame.Rect(0, 0, 116, 40), "", max_length=6, allowed_chars="0123456789")
+        self._card_image_cache: dict[tuple[str, int, int], pygame.Surface] = {}
         self._load_ui_config(force=True)
 
     def run(self) -> None:
@@ -223,6 +256,9 @@ class PokerApp:
             self.ui_debug = not self.ui_debug
             self.status = f"UI 调试模式{'开启' if self.ui_debug else '关闭'}"
             return
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_F9 and self.ui_state == "ROOM":
+            self.dispatch("gm_add_chips")
+            return
         if self.ui_debug and event.type == pygame.KEYDOWN and event.key == pygame.K_F5:
             self._load_ui_config(force=True)
             return
@@ -231,6 +267,8 @@ class PokerApp:
             self.handle_login_event(event)
         elif self.ui_state == "LOBBY":
             self.handle_lobby_event(event)
+        elif self.ui_state == "ROOM":
+            self.handle_room_event(event)
 
         for button in buttons:
             if button.hit(event):
@@ -242,6 +280,24 @@ class PokerApp:
         for rect, room_id in self._room_hitboxes:
             if rect.collidepoint(event.pos):
                 self.selected_room_id = room_id
+                return
+
+    def handle_room_event(self, event: pygame.event.Event) -> None:
+        was_active = self.raise_input.active
+        self.raise_input.handle(event)
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN and was_active:
+            self.dispatch("raise")
+            return
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return
+        for rect, seat_index in self._seat_hitboxes:
+            if rect.collidepoint(event.pos):
+                if (
+                    self.snapshot
+                    and self.snapshot.room_status == poker_pb2.OPEN
+                    and not self.snapshot.seats[seat_index].player_id
+                ):
+                    self.dispatch(f"seat:{seat_index}")
                 return
 
     def handle_login_event(self, event: pygame.event.Event) -> None:
@@ -303,10 +359,14 @@ class PokerApp:
         elif action == "call":
             self.move(poker_pb2.CALL)
         elif action == "raise":
-            amount = self.snapshot.current_bet + self.snapshot.min_raise if self.snapshot else 0
-            self.move(poker_pb2.RAISE, amount)
+            amount = self.resolve_raise_amount()
+            if amount is not None:
+                self.move(poker_pb2.RAISE, amount)
         elif action == "all_in":
             self.move(poker_pb2.ALL_IN)
+        elif action == "gm_add_chips":
+            self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/gm addchips 2000")))
+            self.status = "已请求 GM 给自己增加 2000 筹码。"
 
     def login(self) -> None:
         name = self.name_input.value.strip()
@@ -419,7 +479,6 @@ class PokerApp:
 
     def make_room_buttons(self) -> list[Button]:
         width, height = self.screen.get_size()
-        layout = self.room_layout(width, height)
         header_specs: list[tuple[str, str, tuple[int, int, int], bool]] = [
             ("离开房间", "leave_room", PANEL_2, True),
         ]
@@ -452,27 +511,6 @@ class PokerApp:
             for rect, (label, action, color, enabled) in zip(header_rects, header_specs)
         ]
 
-        seat_button_width = 82 if width >= 1100 else 74
-        seat_button_gap = 10 if width >= 1100 else 8
-        seat_total_width = seat_button_width * 6 + seat_button_gap * 5
-        seat_start_x = max(26, min(layout["table"].centerx - seat_total_width // 2, width - seat_total_width - 26))
-        for index in range(6):
-            occupied = bool(self.snapshot and self.snapshot.seats[index].player_id)
-            seat_enabled = bool(
-                self.snapshot
-                and self.snapshot.room_status == poker_pb2.OPEN
-                and not occupied
-            )
-            buttons.append(
-                Button(
-                    pygame.Rect(seat_start_x + index * (seat_button_width + seat_button_gap), height - 66, seat_button_width, 40),
-                    f"座位 {index + 1}",
-                    f"seat:{index}",
-                    PANEL_2,
-                    seat_enabled,
-                )
-            )
-
         actions = self.available_actions()
         specs = [
             ("弃牌", "fold", RED, actions["fold"]),
@@ -481,7 +519,21 @@ class PokerApp:
             ("加注", "raise", GOLD, actions["raise"]),
             ("全下", "all_in", RED, actions["all_in"]),
         ]
-        action_rects = layout_button_row(width - 26, height - 66, 90, 40, len(specs), gap=12)
+        input_width = 140 if width >= 1100 else 116
+        action_width = 90
+        gap = 12
+        total_width = input_width + gap + len(specs) * action_width + (len(specs) - 1) * gap
+        start_x = width - 26 - total_width
+        self.raise_input.rect = pygame.Rect(start_x, height - 66, input_width, 40)
+        action_rects = [
+            pygame.Rect(
+                self.raise_input.rect.right + gap + index * (action_width + gap),
+                height - 66,
+                action_width,
+                40,
+            )
+            for index in range(len(specs))
+        ]
         for rect, (label, action, color, enabled) in zip(action_rects, specs):
             buttons.append(Button(rect, label, action, color, enabled))
         return buttons
@@ -508,6 +560,43 @@ class PokerApp:
         if self.snapshot.room_status != poker_pb2.OPEN or self.snapshot.phase != poker_pb2.WAITING:
             return False
         return any(not seat.player_id for seat in self.snapshot.seats)
+
+    def default_raise_amount(self) -> int:
+        if not self.snapshot:
+            return 0
+        return max(0, self.snapshot.current_bet + self.snapshot.min_raise)
+
+    def max_raise_amount(self) -> int:
+        hero_seat = self.hero_seat()
+        if not hero_seat:
+            return 0
+        return hero_seat.committed + hero_seat.chips
+
+    def resolve_raise_amount(self) -> int | None:
+        if not self.snapshot:
+            return None
+        hero_seat = self.hero_seat()
+        if not hero_seat:
+            self.status = "你还没有入座。"
+            return None
+        if not self.raise_input.value.strip():
+            amount = self.default_raise_amount()
+            self.raise_input.value = str(amount)
+        else:
+            try:
+                amount = int(self.raise_input.value)
+            except ValueError:
+                self.status = "加注金额必须是数字。"
+                return None
+        min_target = self.default_raise_amount()
+        max_target = self.max_raise_amount()
+        if amount > max_target:
+            self.status = f"加注目标不能超过 {max_target}。"
+            return None
+        if amount < min_target:
+            self.status = f"加注目标至少为 {min_target}。"
+            return None
+        return amount
 
     def available_actions(self) -> dict[str, bool]:
         actions = {"fold": False, "check": False, "call": False, "raise": False, "all_in": False}
@@ -626,6 +715,7 @@ class PokerApp:
 
         self.draw_table(table)
         self.draw_room_side_panel(layout["side_panel"])
+        self.draw_raise_input()
 
     def draw_table(self, table: pygame.Rect) -> None:
         phase = phase_label(self.snapshot.phase)
@@ -634,10 +724,11 @@ class PokerApp:
             top_line += f" | {self.snapshot.starting_countdown_seconds} 秒后开始"
         draw_centered(self.screen, self.small, top_line, pygame.Rect(table.centerx - 260, table.y + 28, 520, 30), GOLD)
 
-        card_gap = 64 if table.width >= 560 else 56
-        card_width = 52 if table.width >= 560 else 46
-        card_height = 74 if table.width >= 560 else 68
+        card_gap = 70 if table.width >= 700 else 60
+        card_width = 58 if table.width >= 700 else 50
+        card_height = 84 if table.width >= 700 else 72
         board_width = card_width * 5 + (card_gap - card_width) * 4
+        self._seat_hitboxes = []
         draw_cards(
             self.screen,
             self.card_font,
@@ -651,27 +742,15 @@ class PokerApp:
 
         positions = seat_positions(table, seat_rect_size(table))
         for seat in self.snapshot.seats:
-            self.draw_seat(seat, positions[seat.seat_index])
+            self._seat_hitboxes.append((positions[seat.seat_index], seat.seat_index))
+            self.draw_seat(seat, positions[seat.seat_index], table)
 
-        if self.snapshot.hero_cards:
-            hero_total_width = card_width * 2 + (card_gap - card_width)
-            draw_cards(
-                self.screen,
-                self.card_font,
-                self.snapshot.hero_cards,
-                table.centerx - hero_total_width // 2,
-                table.bottom - (108 if table.height >= 340 else 96),
-                reveal=True,
-                count=2,
-                gap=card_gap,
-                card_size=(card_width, card_height),
-            )
-
-    def draw_seat(self, seat, rect: pygame.Rect) -> None:
+    def draw_seat(self, seat, rect: pygame.Rect, table: pygame.Rect) -> None:
         is_hero = bool(self.connection and seat.player_id == self.connection.player_id)
-        fill = (52, 61, 55) if seat.player_id else (31, 43, 43)
+        fill = (48, 57, 53) if seat.player_id else (29, 40, 43)
         if seat.is_turn:
             fill = (85, 70, 33)
+        pygame.draw.rect(self.screen, SHADOW, rect.move(0, 4), border_radius=16)
         pygame.draw.rect(self.screen, fill, rect, border_radius=10)
         pygame.draw.rect(self.screen, GOLD if is_hero else LINE, rect, width=2 if is_hero else 1, border_radius=10)
 
@@ -687,21 +766,60 @@ class PokerApp:
             status.append("弃牌")
         if seat.all_in:
             status.append("全下")
-        if seat.committed:
-            status.append(f"下注 {seat.committed}")
-        detail = " / ".join(status) if status else ("可入座" if not seat.player_id else f"筹码 {seat.chips}")
+        detail = " / ".join(status) if status else ("点击入座" if not seat.player_id else "待行动")
         chips = f"筹码 {seat.chips}" if seat.player_id else ""
 
-        avatar_size = max(34, min(42, rect.height - 24))
-        avatar_rect = pygame.Rect(rect.x + 10, rect.y + 10, avatar_size, avatar_size)
+        avatar_size = max(36, min(44, rect.height - 22))
+        avatar_rect = pygame.Rect(rect.x + 12, rect.y + 10, avatar_size, avatar_size)
         avatar_id = seat.avatar_id if seat.avatar_id else DEFAULT_AVATAR_IDS[seat.seat_index % len(DEFAULT_AVATAR_IDS)]
         draw_avatar(self.screen, avatar_rect, avatar_id, placeholder=not seat.player_id)
 
+        card_w = max(30, min(38, rect.width // 5))
+        card_h = int(card_w * 1.42)
+        card_gap = card_w - 8
+        cards_x = rect.right - card_w * 2 - 20
+        cards_y = rect.y + rect.height - card_h - 10
         text_x = avatar_rect.right + 10
-        max_width = rect.right - text_x - 8
+        max_width = max(48, cards_x - text_x - 10)
         draw_text_clipped(self.screen, self.small, name, text_x, rect.y + 12, max_width, TEXT)
-        draw_text_clipped(self.screen, self.small, detail, text_x, rect.y + 38, max_width, GOLD if seat.is_turn else MUTED)
-        draw_text_clipped(self.screen, self.small, chips, text_x, rect.y + 62, max_width, MUTED)
+        draw_text_clipped(self.screen, self.small, chips, text_x, rect.y + 38, max_width, GOLD if is_hero else TEXT)
+        draw_text_clipped(self.screen, self.small, detail, text_x, rect.y + 62, max_width, GOLD if seat.is_turn else MUTED)
+
+        if seat.player_id and not seat.folded and seat.hole_card_count > 0:
+            reveal_cards = is_hero and len(self.snapshot.hero_cards) >= 2
+            cards = self.snapshot.hero_cards if reveal_cards else []
+            draw_cards(
+                self.screen,
+                self.card_font,
+                cards,
+                cards_x,
+                cards_y,
+                reveal=reveal_cards,
+                count=2,
+                gap=card_gap,
+                card_size=(card_w, card_h),
+            )
+
+        if seat.committed:
+            bet_rect = seat_bet_rect(rect, table)
+            pygame.draw.rect(self.screen, GOLD, bet_rect, border_radius=12)
+            pygame.draw.rect(self.screen, (93, 66, 21), bet_rect, width=1, border_radius=12)
+            draw_centered(self.screen, self.small, f"下注 {seat.committed}", bet_rect, (40, 30, 14))
+
+    def draw_raise_input(self) -> None:
+        draw_text(self.screen, self.small, "加注到", self.raise_input.rect.x, self.raise_input.rect.y - 24, GOLD)
+        self.raise_input.draw(self.screen, self.small, "")
+        if self.snapshot:
+            helper = f"最小 {self.default_raise_amount()} / 最大 {self.max_raise_amount()} / F9 +2000"
+            draw_text_clipped(
+                self.screen,
+                self.small,
+                helper,
+                self.raise_input.rect.x,
+                self.raise_input.rect.bottom + 6,
+                320,
+                MUTED,
+            )
 
     def draw_room_side_panel(self, panel: pygame.Rect) -> None:
         pygame.draw.rect(self.screen, PANEL, panel, border_radius=12)
@@ -1060,16 +1178,63 @@ def draw_cards(
     card_width, card_height = card_size
     for index in range(count):
         rect = pygame.Rect(x + index * gap, y, card_width, card_height)
-        pygame.draw.rect(surface, CARD, rect, border_radius=7)
-        pygame.draw.rect(surface, (214, 205, 184), rect, width=1, border_radius=7)
         if reveal and index < len(cards):
             card = cards[index]
-            label = f"{rank_label(card.rank)}{suit_label(card.suit)}"
-            color = CARD_RED if card.suit in (poker_pb2.HEARTS, poker_pb2.DIAMONDS) else CARD_BLACK
-            draw_centered(surface, font, label, rect, color)
+            card_image = load_card_image(card, card_size)
+            if card_image is not None:
+                surface.blit(card_image, rect)
+            else:
+                draw_card_face_fallback(surface, font, rect, card)
         else:
-            inset = 12 if card_width >= 52 else 10
-            pygame.draw.rect(surface, (67, 103, 141), rect.inflate(-inset, -inset), border_radius=5)
+            back_image = load_card_back_image(card_size)
+            if back_image is not None:
+                surface.blit(back_image, rect)
+            else:
+                pygame.draw.rect(surface, CARD, rect, border_radius=7)
+                pygame.draw.rect(surface, (214, 205, 184), rect, width=1, border_radius=7)
+                inset = 12 if card_width >= 52 else 10
+                pygame.draw.rect(surface, (67, 103, 141), rect.inflate(-inset, -inset), border_radius=5)
+
+
+def draw_card_face_fallback(surface: pygame.Surface, font: pygame.font.Font, rect: pygame.Rect, card) -> None:
+    pygame.draw.rect(surface, CARD, rect, border_radius=7)
+    pygame.draw.rect(surface, (214, 205, 184), rect, width=1, border_radius=7)
+    label = f"{rank_label(card.rank)}{suit_label(card.suit)}"
+    color = CARD_RED if card.suit in (poker_pb2.HEARTS, poker_pb2.DIAMONDS) else CARD_BLACK
+    draw_centered(surface, font, label, rect, color)
+
+
+def card_asset_path(card) -> Path | None:
+    rank_name = CARD_RANK_NAMES.get(card.rank)
+    suit_name = CARD_SUIT_NAMES.get(card.suit)
+    if not rank_name or not suit_name:
+        return None
+    return CARD_ASSET_DIR / f"{rank_name}_{suit_name}.svg"
+
+
+def load_card_image(card, card_size: tuple[int, int]) -> pygame.Surface | None:
+    path = card_asset_path(card)
+    if path is None:
+        return None
+    return load_card_surface(path, card_size)
+
+
+def load_card_back_image(card_size: tuple[int, int]) -> pygame.Surface | None:
+    return load_card_surface(CARD_ASSET_DIR / "card_back.svg", card_size)
+
+
+def load_card_surface(path: Path, card_size: tuple[int, int]) -> pygame.Surface | None:
+    key = (str(path), card_size[0], card_size[1])
+    cached = _CARD_IMAGE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        image = pygame.image.load(str(path)).convert_alpha()
+        image = pygame.transform.smoothscale(image, card_size)
+    except Exception:
+        return None
+    _CARD_IMAGE_CACHE[key] = image
+    return image
 
 
 def draw_avatar(
@@ -1122,12 +1287,24 @@ def seat_positions(table: pygame.Rect, seat_size: tuple[int, int]) -> list[pygam
     ]
 
 
+def seat_bet_rect(rect: pygame.Rect, table: pygame.Rect) -> pygame.Rect:
+    width = max(62, min(86, rect.width // 2))
+    height = 24
+    if rect.centery > table.centery + 40:
+        return pygame.Rect(rect.centerx - width // 2, rect.y - height - 6, width, height)
+    if rect.centery < table.centery - 40:
+        return pygame.Rect(rect.centerx - width // 2, rect.bottom + 6, width, height)
+    if rect.centerx < table.centerx:
+        return pygame.Rect(rect.right + 6, rect.centery - height // 2, width, height)
+    return pygame.Rect(rect.x - width - 6, rect.centery - height // 2, width, height)
+
+
 def seat_rect_size(table: pygame.Rect) -> tuple[int, int]:
     if table.width >= 720 and table.height >= 420:
-        return (178, 96)
+        return (212, 112)
     if table.width >= 600:
-        return (160, 90)
-    return (142, 84)
+        return (188, 102)
+    return (164, 94)
 
 
 def layout_button_row(right: int, y: int, width: int, height: int, count: int, gap: int) -> list[pygame.Rect]:

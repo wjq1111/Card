@@ -279,6 +279,8 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             message = event.chat_message.text.strip()
             if message == "/addbot":
                 self.add_guarded_bot(player_id, room)
+            elif message.startswith("/gm addchips "):
+                self.grant_debug_chips(player_id, room, int(message.split()[-1]))
             else:
                 room.log_line(f"{room.players.get(player_id, 'Player')}: {message[:120]}")
 
@@ -288,6 +290,21 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
     def persist_player_chips(self, player_id: str, player_name: str, chips: int) -> None:
         stored = self.chip_store.set_chips(player_name, chips)
         self.player_chip_balances[player_id] = stored
+
+    def grant_debug_chips(self, player_id: str, room: PokerRoom, amount: int) -> None:
+        if amount <= 0:
+            raise ValueError("GM 筹码数量必须大于 0")
+        player_name = self.player_names.get(player_id, "Player")
+        seat = room.find_seat(player_id)
+        if seat:
+            seat.chips += amount
+            room.sync_player_chips(player_id, seat.chips)
+            self.player_chip_balances[player_id] = seat.chips
+            room.log_line(f"{seat.name} GM 增加了 {amount} 筹码", event_type="GM")
+            return
+        new_total = self.chip_store.add_chips(player_name, amount)
+        self.player_chip_balances[player_id] = new_total
+        room.log_line(f"{player_name} GM 增加了 {amount} 筹码（未入座）", event_type="GM")
 
     def _room_loop(self) -> None:
         while True:

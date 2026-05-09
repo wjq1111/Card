@@ -168,12 +168,46 @@ class PokerAppUiTest(unittest.TestCase):
         self.assertFalse(buttons["call"].enabled)
         self.assertTrue(buttons["raise"].enabled)
         self.assertTrue(buttons["all_in"].enabled)
+        self.assertTrue(all(not action.startswith("seat:") for action in buttons))
 
         self.app.dispatch("raise")
 
         move = connection.sent[-1].player_move
         self.assertEqual(move.type, poker_pb2.RAISE)
         self.assertEqual(move.amount, 80)
+
+    def test_raise_uses_custom_target_amount_from_input(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(
+            phase=poker_pb2.PREFLOP,
+            hero_turn=True,
+            hero_ready=True,
+            current_bet=40,
+            min_raise=40,
+            room_status=poker_pb2.PLAYING,
+        )
+        self.app.ui_state = "ROOM"
+        self.app.raise_input.value = "140"
+
+        self.app.dispatch("raise")
+
+        move = connection.sent[-1].player_move
+        self.assertEqual(move.type, poker_pb2.RAISE)
+        self.assertEqual(move.amount, 140)
+
+    def test_gm_shortcut_dispatch_sends_add_chips_command(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F9)
+        self.app.handle_event(event, self.app.make_buttons())
+
+        self.assertEqual(connection.sent[-1].chat_message.text, "/gm addchips 2000")
 
     def test_facing_bet_enables_call_and_disables_check(self) -> None:
         connection = FakeConnection()

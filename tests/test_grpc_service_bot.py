@@ -59,6 +59,20 @@ class PokerServiceBotTest(unittest.TestCase):
 
         self.assertNotIn(room.room_id, service.rooms)
 
+    def test_gm_add_chips_command_updates_seated_stack(self) -> None:
+        service = self.build_service()
+        room = service.create_room_for_test()
+        seat = room.require_seat("owner")
+
+        service.handle_room_event(
+            "owner",
+            room.room_id,
+            poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/gm addchips 2000")),
+        )
+
+        self.assertEqual(seat.chips, 4000)
+        self.assertEqual(service.player_chip_balances["owner"], 4000)
+
 
 def _create_room_for_test(self: PokerService):
     self.player_names["owner"] = "Owner"
