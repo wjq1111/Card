@@ -228,6 +228,7 @@ class PokerApp:
         self._login_avatar_hitboxes: list[tuple[pygame.Rect, str]] = []
         self._room_hitboxes: list[tuple[pygame.Rect, str]] = []
         self._seat_hitboxes: list[tuple[pygame.Rect, int]] = []
+        self._last_countdown_tip: tuple[str, int] | None = None
         self._avatar_picker_open = False
         self.ui_debug = ui_debug
         self.ui_config = default_login_ui_config()
@@ -427,9 +428,18 @@ class PokerApp:
             elif payload == "joined":
                 self.set_status(f"已进入房间 {server_event.joined.room_id}")
             elif payload == "snapshot":
+                previous_countdown = self.snapshot.starting_countdown_seconds if self.snapshot else 0
                 self.snapshot = server_event.snapshot
                 self.ui_state = "ROOM"
                 self.log_snapshot(server_event.snapshot)
+                current_countdown = self.snapshot.starting_countdown_seconds
+                if current_countdown > 0:
+                    countdown_key = (self.snapshot.room_id, current_countdown)
+                    if self._last_countdown_tip != countdown_key or previous_countdown != current_countdown:
+                        self.set_status(f"{current_countdown} 秒后开局", duration=1.2)
+                        self._last_countdown_tip = countdown_key
+                else:
+                    self._last_countdown_tip = None
             elif payload == "error":
                 prefix = f"{server_event.error.code}: " if server_event.error.code else ""
                 self.set_status(prefix + server_event.error.message, duration=2.5)
@@ -725,8 +735,6 @@ class PokerApp:
     def draw_table(self, table: pygame.Rect) -> None:
         phase = phase_label(self.snapshot.phase)
         top_line = f"{room_status_label(self.snapshot.room_status)} | {phase} | 底池 {self.snapshot.pot}"
-        if self.snapshot.starting_countdown_seconds > 0:
-            top_line += f" | {self.snapshot.starting_countdown_seconds} 秒后开始"
         draw_centered(self.screen, self.small, top_line, pygame.Rect(table.centerx - 260, table.y + 28, 520, 30), GOLD)
 
         card_gap = 70 if table.width >= 700 else 60
