@@ -56,7 +56,7 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.bot_rngs: dict[str, random.Random] = {}
         self.bot_action_deadlines: dict[str, tuple[tuple[object, ...], float]] = {}
         self.minimax_bot_transport = "auto"
-        self.minimax_bot_api_key_file = "api.key"
+        self.minimax_bot_api_key_file = "/root/TexasHoldemOnline/api.key"
         self.minimax_transcript_root_dir = "runtime_logs/minimax_bots"
         self.lock = threading.RLock()
         self.server_logs = GameLogStore("runtime_logs", "server", "rooms")

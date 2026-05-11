@@ -220,7 +220,7 @@ def run_minimax_bot_turn(
     room: PokerRoom,
     player_id: str,
     *,
-    api_key_file: str = "api.key",
+    api_key_file: str = "/root/TexasHoldemOnline/api.key",
     transcript_root_dir: str = "runtime_logs/minimax_bots",
     transport: str = "auto",
     max_tokens: int = 2048,

@@ -563,7 +563,7 @@ class PokerApp:
     def make_room_buttons(self) -> list[Button]:
         width, height = self.screen.get_size()
         header_specs: list[tuple[str, str, tuple[int, int, int], bool]] = [
-            ("绂诲紑鎴块棿", "leave_room", PANEL_2, True),
+            ("Leave", "leave_room", PANEL_2, True),
         ]
         hero_seat = self.hero_seat()
         can_toggle_ready = bool(
@@ -572,13 +572,13 @@ class PokerApp:
             and self.snapshot.room_status == poker_pb2.OPEN
             and self.snapshot.phase in (poker_pb2.WAITING, poker_pb2.HAND_COMPLETE)
         )
-        ready_label = "鍙栨秷鍑嗗" if hero_seat and hero_seat.ready else "鍑嗗"
+        ready_label = "Unready" if hero_seat and hero_seat.ready else "Ready"
         if hero_seat:
             header_specs.insert(0, (ready_label, "ready", GOLD, can_toggle_ready))
             header_specs.insert(
                 1,
                 (
-                    "绂诲骇",
+                    "Stand",
                     "stand",
                     PANEL_2,
                     bool(self.snapshot and self.snapshot.room_status == poker_pb2.OPEN),
