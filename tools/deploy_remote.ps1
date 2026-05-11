@@ -121,7 +121,7 @@ elif [ "$sync_mode" = "archive" ]; then
   staging_dir="$(mktemp -d)"
   trap 'rm -rf "$staging_dir" "$archive_path"' EXIT
   tar -xzf "$archive_path" -C "$staging_dir"
-  find "$remote_path" -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.venv' ! -name 'runtime_logs' -exec rm -rf {} +
+  find "$remote_path" -mindepth 1 -maxdepth 1 ! -name '.git' ! -name '.venv' ! -name 'runtime_logs' ! -name 'api.key' -exec rm -rf {} +
   cp -a "$staging_dir"/. "$remote_path"/
   rm -rf "$staging_dir"
   rm -f "$archive_path"

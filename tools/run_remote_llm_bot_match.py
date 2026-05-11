@@ -77,6 +77,14 @@ class RemoteMatchSession:
             description="room to be created",
         )
 
+    def leave_room(self) -> None:
+        self.send(poker_pb2.ClientEvent(leave_room=poker_pb2.LeaveRoom()))
+        self.wait_for(
+            lambda: self.snapshot is None or self.snapshot.room_id != self.room_id,
+            timeout=10.0,
+            description="room to be left",
+        )
+
     def add_guarded_bot(self) -> None:
         self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addbot")))
 
@@ -121,6 +129,8 @@ class RemoteMatchSession:
                 self.room_id = event.joined.room_id
             elif payload == "snapshot":
                 self.snapshot = event.snapshot
+                if event.snapshot.last_hand_result.hand_id:
+                    self._hand_results[event.snapshot.last_hand_result.hand_id] = event.snapshot.last_hand_result
             elif payload == "hand_result":
                 self._hand_results[event.hand_result.hand_id] = event.hand_result
             elif payload == "error":
@@ -340,34 +350,43 @@ def main() -> int:
     args = parse_args()
     session = RemoteMatchSession(args.address, poll_interval=args.poll_interval)
     session.login(args.owner_name)
-    session.create_room(args.room_name)
-    session.add_guarded_bot()
-    session.add_minimax_bot()
-    score_bot, minimax_bot = session.wait_for_bots()
-    players = [score_bot, minimax_bot]
 
     hand_results: list[poker_pb2.HandResult] = []
-    for _ in range(args.hands):
-        hand_results.append(session.run_hand(args.timeout))
+    players: list[MatchPlayer] = []
+    for hand_index in range(args.hands):
+        session.create_room(f"{args.room_name} #{hand_index + 1}")
+        session.add_guarded_bot()
+        session.add_minimax_bot()
+        score_bot, minimax_bot = session.wait_for_bots()
+        if not players:
+            players = [score_bot, minimax_bot]
+        hand_result = session.run_hand(args.timeout)
+        hand_results.append(hand_result)
         session.wait_for(
             lambda: session.snapshot is not None and session.snapshot.room_status == poker_pb2.OPEN,
             timeout=15.0,
             description="room to reopen after the hand",
         )
+        if any(delta.final_stack <= 0 for delta in hand_result.chip_deltas):
+            session.leave_room()
+            break
+        session.leave_room()
 
-    store = GameLogStore(Path(args.logs_root), "server", "rooms")
-    hand_ids = [result.hand_id for result in hand_results]
-    action_counts = collect_hand_action_counts(store, session.room_id, hand_ids)
-    decisions = collect_minimax_decisions(store, session.room_id, hand_ids)
+    hand_records: list[HandMatchRecord] = []
+    all_decisions: list[MiniMaxDecisionRecord] = []
     players_by_seat = {player.seat_index: player for player in players}
-    hand_records = [build_hand_record(result, action_counts, players_by_seat) for result in hand_results]
+    for result in hand_results:
+        room_id = result.hand_id.split("-000001-")[0]
+        store = GameLogStore(Path(args.logs_root), "server", room_id)
+        action_counts = collect_hand_action_counts(store, room_id, [result.hand_id])
+        all_decisions.extend(collect_minimax_decisions(store, room_id, [result.hand_id]))
+        hand_records.append(build_hand_record(result, action_counts, players_by_seat))
 
-    print(render_summary(hand_records, players, decisions, args.transcript_limit))
+    print(render_summary(hand_records, players, all_decisions, args.transcript_limit))
 
     if args.json:
         payload = {
             "address": args.address,
-            "room_id": session.room_id,
             "players": [player.__dict__ for player in players],
             "hands": [
                 {
@@ -380,7 +399,7 @@ def main() -> int:
                 }
                 for hand in hand_records
             ],
-            "minimax_decisions": [decision.__dict__ for decision in decisions],
+            "minimax_decisions": [decision.__dict__ for decision in all_decisions],
         }
         print()
         print(json.dumps(payload, ensure_ascii=False, indent=2))
