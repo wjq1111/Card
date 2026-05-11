@@ -26,6 +26,7 @@
 ## Notes For Agents
 
 - Final code imports should use `src.*` package paths. Do not add compatibility shims or duplicate root-level packages.
+- Start new repo sessions from `docs/work-index/README.md` when you need the quickest overview of active tools and the current `dev`/`master` gap.
 - If a deploy reaches the server but GitHub is unavailable, `tools/deploy_remote.ps1` should fall back to a local `git archive` plus `scp` upload.
 - If you need to inspect the currently deployed revision on the server, check `/root/TexasHoldemOnline/.deployed_head` and `systemctl show texas-holdem.service`.
 - Keep new source code under `src/`, not at the repo root.

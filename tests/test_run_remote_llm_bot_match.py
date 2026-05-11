@@ -57,7 +57,9 @@ class RemoteLlmBotMatchToolTest(unittest.TestCase):
             room_log.parent.mkdir(parents=True, exist_ok=True)
             rows = [
                 {
+                    "timestamp": "2026-05-11T10:00:00+00:00",
                     "event_type": "MINIMAX_BOT_DECISION",
+                    "hand_number": 1,
                     "hand_id": "room-1-000001-test",
                     "message": "MiniMax Bot 1 minimax bot chose CALL",
                     "data": {
@@ -84,6 +86,54 @@ class RemoteLlmBotMatchToolTest(unittest.TestCase):
         self.assertEqual(decisions[0].move_type, "CALL")
         self.assertEqual(decisions[0].source, "model")
         self.assertEqual(decisions[0].reason, "pot odds")
+        self.assertEqual(decisions[0].timestamp, "2026-05-11T10:00:00+00:00")
+        self.assertEqual(decisions[0].hand_number, 1)
+
+    def test_collect_minimax_turn_transcripts_loads_prompt_and_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            transcript_path = Path(tmp_dir) / "turn_001.md"
+            transcript_path.write_text(
+                "\n".join(
+                    [
+                        "# MiniMax Bot Turn",
+                        "",
+                        "<!-- MINIMAX_BOT_INPUT_START -->",
+                        "room_id: room-1",
+                        "legal_actions: CHECK, RAISE",
+                        "<!-- MINIMAX_BOT_INPUT_END -->",
+                        "",
+                        "<!-- MINIMAX_BOT_OUTPUT_START -->",
+                        "move_type: RAISE",
+                        "amount: 80",
+                        "reason: test",
+                        "<!-- MINIMAX_BOT_OUTPUT_END -->",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            decisions = [
+                MODULE.MiniMaxDecisionRecord(
+                    timestamp="2026-05-11T10:00:00+00:00",
+                    player_id="minimax:1",
+                    player_name="MiniMax Bot 1",
+                    hand_id="room-1-000001-test",
+                    hand_number=1,
+                    move_type="RAISE",
+                    amount=80,
+                    source="model",
+                    reason="aggressive",
+                    transcript_path=str(transcript_path),
+                    raw_response="move_type: RAISE\namount: 80\nreason: test",
+                )
+            ]
+
+            turns = MODULE.collect_minimax_turn_transcripts(decisions)
+
+        self.assertEqual(len(turns), 1)
+        self.assertEqual(turns[0].prompt_text, "room_id: room-1\nlegal_actions: CHECK, RAISE")
+        self.assertEqual(turns[0].output_text, "move_type: RAISE\namount: 80\nreason: test")
+        self.assertEqual(turns[0].move_type, "RAISE")
 
 
 if __name__ == "__main__":

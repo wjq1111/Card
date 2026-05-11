@@ -16,6 +16,7 @@ Python-based Texas Holdem project with a gRPC server and a pygame desktop client
 - `assets/`: future art, audio, and static content assets
 - `artifacts/pyinstaller/`: generated spec plus PyInstaller build and dist outputs
 - `runtime_logs/`: local logs and simple file-backed runtime state
+- `docs/work-index/`: quick resume index for tools, branch gap, and next-session entry points
 
 ## Setup
 

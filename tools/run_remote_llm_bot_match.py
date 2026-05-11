@@ -5,6 +5,7 @@ import json
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+import re
 import sys
 import time
 from typing import Callable
@@ -33,9 +34,11 @@ class MatchPlayer:
 
 @dataclass(frozen=True)
 class MiniMaxDecisionRecord:
+    timestamp: str
     player_id: str
     player_name: str
     hand_id: str
+    hand_number: int
     move_type: str
     amount: int
     source: str
@@ -46,9 +49,11 @@ class MiniMaxDecisionRecord:
 
 @dataclass(frozen=True)
 class GuardedDecisionRecord:
+    timestamp: str
     player_id: str
     player_name: str
     hand_id: str
+    hand_number: int
     move_type: str
     amount: int
     reason: str
@@ -64,6 +69,23 @@ class HandMatchRecord:
     chip_deltas: dict[int, int]
     final_stacks: dict[int, int]
     action_counts: dict[str, Counter[str]]
+
+
+@dataclass(frozen=True)
+class MiniMaxTurnTranscript:
+    timestamp: str
+    hand_id: str
+    hand_number: int
+    player_id: str
+    player_name: str
+    move_type: str
+    amount: int
+    source: str
+    reason: str
+    transcript_path: str
+    prompt_text: str
+    output_text: str
+    raw_response: str
 
 
 class RemoteMatchSession:
@@ -154,16 +176,15 @@ class RemoteMatchSession:
                 message = event.error.message or event.error.code or "Unknown server error"
                 self.errors.append(message)
 
-    def wait_for_bots(self) -> tuple[MatchPlayer, MatchPlayer]:
+    def wait_for_bot_counts(self, *, guarded_count: int, minimax_count: int) -> list[MatchPlayer]:
         self.wait_for(
-            lambda: self._bot_count(BOT_PREFIX) >= 1 and self._bot_count(MINIMAX_BOT_PREFIX) >= 1,
+            lambda: self._bot_count(BOT_PREFIX) >= guarded_count and self._bot_count(MINIMAX_BOT_PREFIX) >= minimax_count,
             timeout=20.0,
-            description="score bot and minimax bot to join",
+            description="configured bots to join",
         )
-        players = self.room_players()
-        score = next(player for player in players.values() if player.player_id.startswith(BOT_PREFIX))
-        minimax = next(player for player in players.values() if player.player_id.startswith(MINIMAX_BOT_PREFIX))
-        return score, minimax
+        players = list(self.room_players().values())
+        players.sort(key=lambda player: player.seat_index)
+        return players
 
     def _bot_count(self, prefix: str) -> int:
         return sum(1 for player_id in self.room_players() if player_id.startswith(prefix))
@@ -188,15 +209,17 @@ class RemoteMatchSession:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a live guarded-bot vs MiniMax-bot match against a gRPC server.")
+    parser = argparse.ArgumentParser(description="Run a live bot match against a gRPC server and print MiniMax prompts/results.")
     parser.add_argument("--address", default="127.0.0.1:50051", help="Target gRPC server address.")
-    parser.add_argument("--hands", type=int, default=3, help="Number of hands to play.")
+    parser.add_argument("--hands", type=int, default=1, help="Number of hands to play in the same room.")
     parser.add_argument("--timeout", type=float, default=90.0, help="Per-hand timeout in seconds.")
     parser.add_argument("--poll-interval", type=float, default=0.2, help="Polling interval for the gRPC stream.")
     parser.add_argument("--owner-name", default="LLM Match Driver", help="Name used for the driver account.")
     parser.add_argument("--room-name", default="Remote LLM Bot Match", help="Display name for the temporary room.")
     parser.add_argument("--logs-root", default="runtime_logs", help="Root directory that contains server runtime logs.")
-    parser.add_argument("--transcript-limit", type=int, default=3, help="How many recent MiniMax transcripts to print.")
+    parser.add_argument("--guarded-bots", type=int, default=1, help="How many score bots to seat.")
+    parser.add_argument("--minimax-bots", type=int, default=1, help="How many MiniMax bots to seat.")
+    parser.add_argument("--transcript-limit", type=int, default=0, help="How many recent MiniMax turns to print in the short summary. Use 0 to print all turns.")
     parser.add_argument("--json", action="store_true", help="Print a JSON report after the text summary.")
     return parser.parse_args()
 
@@ -211,6 +234,26 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def read_transcript_sections(path: str) -> tuple[str, str]:
+    transcript_path = Path(path)
+    if not path or not transcript_path.exists():
+        return "", ""
+    text = transcript_path.read_text(encoding="utf-8")
+    prompt_match = re.search(
+        r"<!-- MINIMAX_BOT_INPUT_START -->\n?(.*?)\n?<!-- MINIMAX_BOT_INPUT_END -->",
+        text,
+        flags=re.DOTALL,
+    )
+    output_match = re.search(
+        r"<!-- MINIMAX_BOT_OUTPUT_START -->\n?(.*?)\n?<!-- MINIMAX_BOT_OUTPUT_END -->",
+        text,
+        flags=re.DOTALL,
+    )
+    prompt_text = prompt_match.group(1).strip() if prompt_match else ""
+    output_text = output_match.group(1).strip() if output_match else ""
+    return prompt_text, output_text
 
 
 def collect_hand_action_counts(
@@ -259,9 +302,11 @@ def collect_minimax_decisions(
             decision = {}
         decisions.append(
             MiniMaxDecisionRecord(
+                timestamp=str(row.get("timestamp", "")),
                 player_id=str(data.get("bot_id", "")),
                 player_name=str(row.get("message", "")).split(" minimax bot chose ", 1)[0],
                 hand_id=hand_id,
+                hand_number=int(row.get("hand_number", 0) or 0),
                 move_type=str(decision.get("move_type", "")),
                 amount=int(decision.get("amount", 0) or 0),
                 source=str(data.get("source", "")),
@@ -302,9 +347,11 @@ def collect_guarded_decisions(
             features = {}
         decisions.append(
             GuardedDecisionRecord(
+                timestamp=str(row.get("timestamp", "")),
                 player_id=str(data.get("bot_id", "")),
                 player_name=str(row.get("message", "")).split(" bot chose ", 1)[0],
                 hand_id=hand_id,
+                hand_number=int(row.get("hand_number", 0) or 0),
                 move_type=str(decision.get("move_type", "")),
                 amount=int(decision.get("amount", 0) or 0),
                 reason=str(data.get("reason", "")),
@@ -326,6 +373,32 @@ def action_rates(counter: Counter[str]) -> dict[str, float]:
         "raise_rate": counter.get("RAISE", 0) / total,
         "all_in_rate": counter.get("ALL_IN", 0) / total,
     }
+
+
+def collect_minimax_turn_transcripts(
+    minimax_decisions: list[MiniMaxDecisionRecord],
+) -> list[MiniMaxTurnTranscript]:
+    transcripts: list[MiniMaxTurnTranscript] = []
+    for decision in sorted(minimax_decisions, key=lambda item: (item.timestamp, item.player_name, item.hand_id)):
+        prompt_text, output_text = read_transcript_sections(decision.transcript_path)
+        transcripts.append(
+            MiniMaxTurnTranscript(
+                timestamp=decision.timestamp,
+                hand_id=decision.hand_id,
+                hand_number=decision.hand_number,
+                player_id=decision.player_id,
+                player_name=decision.player_name,
+                move_type=decision.move_type,
+                amount=decision.amount,
+                source=decision.source,
+                reason=decision.reason,
+                transcript_path=decision.transcript_path,
+                prompt_text=prompt_text,
+                output_text=output_text,
+                raw_response=decision.raw_response,
+            )
+        )
+    return transcripts
 
 
 def build_hand_record(
@@ -353,38 +426,38 @@ def render_summary(
     minimax_decisions: list[MiniMaxDecisionRecord],
     transcript_limit: int,
 ) -> str:
-    player_by_id = {player.player_id: player for player in players}
     lines = [f"Remote bot match over {len(hands)} hands", ""]
     totals = Counter[str]()
     wins = Counter[str]()
     action_totals: dict[str, Counter[str]] = defaultdict(Counter)
 
     for hand in hands:
-        winner_names = ", ".join(player_by_id[player_id].name for player_id in player_by_id if player_by_id[player_id].seat_index in hand.winner_seats)
+        winners = [player.name for player in players if player.seat_index in hand.winner_seats]
+        winner_names = ", ".join(winners)
         lines.append(f"Hand {hand.hand_number} | {hand.hand_id}")
         lines.append(f"  winners={winner_names or '-'}")
         deltas = []
         for player in players:
             delta = hand.chip_deltas.get(player.seat_index, 0)
-            totals[player.player_id] += delta
+            totals[player.name] += delta
             if player.seat_index in hand.winner_seats:
-                wins[player.player_id] += 1
+                wins[player.name] += 1
             deltas.append(f"{player.name}:{delta:+d}")
-            action_totals[player.player_id].update(hand.action_counts.get(player.player_id, Counter()))
+            action_totals[player.name].update(hand.action_counts.get(player.player_id, Counter()))
         lines.append(f"  chip_deltas={' '.join(deltas)}")
         lines.append("")
 
     for player in players:
-        rates = action_rates(action_totals[player.player_id])
-        lines.append(f"{player.player_id} ({player.name})")
-        lines.append(f"  chip_delta={totals[player.player_id]:+d} wins={wins[player.player_id]}")
+        rates = action_rates(action_totals[player.name])
+        lines.append(f"{player.name} | seat={player.seat_index + 1}")
+        lines.append(f"  chip_delta={totals[player.name]:+d} wins={wins[player.name]}")
         lines.append(
             "  actions="
-            f"fold:{action_totals[player.player_id].get('FOLD', 0)} "
-            f"check:{action_totals[player.player_id].get('CHECK', 0)} "
-            f"call:{action_totals[player.player_id].get('CALL', 0)} "
-            f"raise:{action_totals[player.player_id].get('RAISE', 0)} "
-            f"all_in:{action_totals[player.player_id].get('ALL_IN', 0)}"
+            f"fold:{action_totals[player.name].get('FOLD', 0)} "
+            f"check:{action_totals[player.name].get('CHECK', 0)} "
+            f"call:{action_totals[player.name].get('CALL', 0)} "
+            f"raise:{action_totals[player.name].get('RAISE', 0)} "
+            f"all_in:{action_totals[player.name].get('ALL_IN', 0)}"
         )
         lines.append(
             "  rates="
@@ -394,6 +467,19 @@ def render_summary(
         lines.append("")
 
     source_counts = Counter(decision.source for decision in minimax_decisions)
+    minimax_action_counts = Counter(decision.move_type for decision in minimax_decisions)
+    non_check_actions = minimax_action_counts.get("FOLD", 0) + minimax_action_counts.get("RAISE", 0) + minimax_action_counts.get("CALL", 0) + minimax_action_counts.get("ALL_IN", 0)
+    lines.append("MiniMax action focus")
+    lines.append(
+        "  "
+        f"check={minimax_action_counts.get('CHECK', 0)} "
+        f"call={minimax_action_counts.get('CALL', 0)} "
+        f"raise={minimax_action_counts.get('RAISE', 0)} "
+        f"fold={minimax_action_counts.get('FOLD', 0)} "
+        f"all_in={minimax_action_counts.get('ALL_IN', 0)} "
+        f"non_check={non_check_actions}"
+    )
+    lines.append("")
     lines.append("All bot decisions")
     for decision in guarded_decisions:
         suffix = f" amount={decision.amount}" if decision.amount else ""
@@ -412,7 +498,8 @@ def render_summary(
     lines.append(
         f"  total={len(minimax_decisions)} model={source_counts.get('model', 0)} fallback={source_counts.get('fallback', 0)}"
     )
-    for decision in minimax_decisions[-transcript_limit:]:
+    minimax_subset = minimax_decisions if transcript_limit <= 0 else minimax_decisions[-transcript_limit:]
+    for decision in minimax_subset:
         suffix = f" amount={decision.amount}" if decision.amount else ""
         lines.append(
             f"  {decision.hand_id} | {decision.source} | {decision.move_type}{suffix} | {decision.transcript_path}"
@@ -422,20 +509,57 @@ def render_summary(
     return "\n".join(lines)
 
 
+def render_transcript_timeline(turns: list[MiniMaxTurnTranscript]) -> str:
+    lines = ["MiniMax turn timeline", ""]
+    for index, turn in enumerate(turns, start=1):
+        suffix = f" amount={turn.amount}" if turn.amount else ""
+        lines.append(
+            f"Turn {index} | {turn.timestamp} | hand={turn.hand_number} | {turn.player_name} | result={turn.move_type}{suffix} | source={turn.source}"
+        )
+        if turn.reason:
+            lines.append(f"  reason={turn.reason}")
+        if turn.transcript_path:
+            lines.append(f"  transcript={turn.transcript_path}")
+        lines.append("  prompt:")
+        if turn.prompt_text:
+            for line in turn.prompt_text.splitlines():
+                lines.append(f"    {line}")
+        else:
+            lines.append("    <missing prompt>")
+        lines.append("  output:")
+        if turn.output_text:
+            for line in turn.output_text.splitlines():
+                lines.append(f"    {line}")
+        elif turn.raw_response:
+            for line in turn.raw_response.splitlines():
+                lines.append(f"    {line}")
+        else:
+            lines.append("    <missing output>")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
 def main() -> int:
     args = parse_args()
     session = RemoteMatchSession(args.address, poll_interval=args.poll_interval)
     session.login(args.owner_name)
 
+    if args.guarded_bots < 0 or args.minimax_bots < 0:
+        raise SystemExit("Bot counts must be >= 0.")
+    if args.guarded_bots + args.minimax_bots < 2:
+        raise SystemExit("At least two bots are required to start a hand.")
+    if args.guarded_bots + args.minimax_bots > 6:
+        raise SystemExit("The table only has 6 seats.")
+
     hand_results: list[poker_pb2.HandResult] = []
-    players: list[MatchPlayer] = []
-    for hand_index in range(args.hands):
-        session.create_room(f"{args.room_name} #{hand_index + 1}")
+    session.create_room(args.room_name)
+    for _ in range(args.guarded_bots):
         session.add_guarded_bot()
+    for _ in range(args.minimax_bots):
         session.add_minimax_bot()
-        score_bot, minimax_bot = session.wait_for_bots()
-        if not players:
-            players = [score_bot, minimax_bot]
+    players = session.wait_for_bot_counts(guarded_count=args.guarded_bots, minimax_count=args.minimax_bots)
+
+    for _ in range(args.hands):
         hand_result = session.run_hand(args.timeout)
         hand_results.append(hand_result)
         session.wait_for(
@@ -444,23 +568,24 @@ def main() -> int:
             description="room to reopen after the hand",
         )
         if any(delta.final_stack <= 0 for delta in hand_result.chip_deltas):
-            session.leave_room()
             break
-        session.leave_room()
 
     hand_records: list[HandMatchRecord] = []
     all_guarded_decisions: list[GuardedDecisionRecord] = []
     all_minimax_decisions: list[MiniMaxDecisionRecord] = []
     players_by_seat = {player.seat_index: player for player in players}
+    room_id = session.room_id
+    store = GameLogStore(Path(args.logs_root), "server", room_id)
+    hand_ids = [result.hand_id for result in hand_results]
+    all_guarded_decisions.extend(collect_guarded_decisions(store, room_id, hand_ids))
+    all_minimax_decisions.extend(collect_minimax_decisions(store, room_id, hand_ids))
     for result in hand_results:
-        room_id = result.hand_id.split("-000001-")[0]
-        store = GameLogStore(Path(args.logs_root), "server", room_id)
         action_counts = collect_hand_action_counts(store, room_id, [result.hand_id])
-        all_guarded_decisions.extend(collect_guarded_decisions(store, room_id, [result.hand_id]))
-        all_minimax_decisions.extend(collect_minimax_decisions(store, room_id, [result.hand_id]))
         hand_records.append(build_hand_record(result, action_counts, players_by_seat))
 
     print(render_summary(hand_records, players, all_guarded_decisions, all_minimax_decisions, args.transcript_limit))
+    print()
+    print(render_transcript_timeline(collect_minimax_turn_transcripts(all_minimax_decisions)))
 
     if args.json:
         payload = {
@@ -479,9 +604,11 @@ def main() -> int:
             ],
             "guarded_decisions": [decision.__dict__ for decision in all_guarded_decisions],
             "minimax_decisions": [decision.__dict__ for decision in all_minimax_decisions],
+            "minimax_turns": [turn.__dict__ for turn in collect_minimax_turn_transcripts(all_minimax_decisions)],
         }
         print()
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+    session.leave_room()
     return 0
 
 
