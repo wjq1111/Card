@@ -365,7 +365,7 @@ class PokerApp:
         elif action == "call":
             self.move(poker_pb2.CALL)
         elif action == "raise":
-            amount = self.resolve_raise_amount()
+            amount = self.resolve_raise_target()
             if amount is not None:
                 self.move(poker_pb2.RAISE, amount)
         elif action == "all_in":
@@ -691,7 +691,7 @@ class PokerApp:
         elif action == "call":
             self.move(poker_pb2.CALL)
         elif action == "raise":
-            amount = self.resolve_raise_amount()
+            amount = self.resolve_raise_target()
             if amount is not None:
                 self.move(poker_pb2.RAISE, amount)
         elif action == "all_in":
@@ -726,15 +726,16 @@ class PokerApp:
     def default_raise_amount(self) -> int:
         if not self.snapshot:
             return 0
-        return max(0, self.snapshot.current_bet + self.snapshot.min_raise)
+        return max(0, self.snapshot.min_raise)
 
     def max_raise_amount(self) -> int:
         hero_seat = self.hero_seat()
-        if not hero_seat:
+        if not hero_seat or not self.snapshot:
             return 0
-        return hero_seat.committed + hero_seat.chips
+        max_target = hero_seat.committed + hero_seat.chips
+        return max(0, max_target - self.snapshot.current_bet)
 
-    def resolve_raise_amount(self) -> int | None:
+    def _resolve_raise_target_legacy(self) -> int | None:
         if not self.snapshot:
             return None
         hero_seat = self.hero_seat()
@@ -759,6 +760,32 @@ class PokerApp:
             self.set_status(f"加注目标至少为 {min_target}。")
             return None
         return amount
+
+    def resolve_raise_target(self) -> int | None:
+        if not self.snapshot:
+            return None
+        hero_seat = self.hero_seat()
+        if not hero_seat:
+            self.set_status("请先入座。")
+            return None
+        raise_text = self.raise_input.value.strip()
+        if not raise_text:
+            self.set_status("请先输入本次加注金额。")
+            return None
+        try:
+            amount = int(raise_text)
+        except ValueError:
+            self.set_status("加注金额必须是数字。")
+            return None
+        min_raise = self.default_raise_amount()
+        max_raise = self.max_raise_amount()
+        if amount > max_raise:
+            self.set_status(f"加注金额不能超过 {max_raise}。")
+            return None
+        if amount < min_raise:
+            self.set_status(f"加注金额至少为 {min_raise}。")
+            return None
+        return self.snapshot.current_bet + amount
 
     def available_actions(self) -> dict[str, bool]:
         actions = {"fold": False, "check": False, "call": False, "raise": False, "all_in": False}
@@ -971,10 +998,10 @@ class PokerApp:
             draw_centered(self.screen, self.small, f"下注 {seat.committed}", bet_rect, (40, 30, 14))
 
     def draw_raise_input(self) -> None:
-        draw_text(self.screen, self.small, "加注到", self.raise_input.rect.x, self.raise_input.rect.y - 24, GOLD)
+        draw_text(self.screen, self.small, "加注额", self.raise_input.rect.x, self.raise_input.rect.y - 24, GOLD)
         self.raise_input.draw(self.screen, self.small, "")
         if self.snapshot:
-            helper = f"最小 {self.default_raise_amount()} / 最大 {self.max_raise_amount()} / F9 +2000"
+            helper = f"最小加注 {self.default_raise_amount()} / 最大加注 {self.max_raise_amount()} / F9 +2000"
             draw_text_clipped(
                 self.screen,
                 self.small,

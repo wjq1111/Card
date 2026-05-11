@@ -170,13 +170,14 @@ class PokerAppUiTest(unittest.TestCase):
         self.assertTrue(buttons["all_in"].enabled)
         self.assertTrue(all(not action.startswith("seat:") for action in buttons))
 
+        self.app.raise_input.value = "40"
         self.app.dispatch("raise")
 
         move = connection.sent[-1].player_move
         self.assertEqual(move.type, poker_pb2.RAISE)
         self.assertEqual(move.amount, 80)
 
-    def test_raise_uses_custom_target_amount_from_input(self) -> None:
+    def test_raise_requires_manual_input(self) -> None:
         connection = FakeConnection()
         connection.player_id = "hero"
         self.app.connection = connection
@@ -189,13 +190,31 @@ class PokerAppUiTest(unittest.TestCase):
             room_status=poker_pb2.PLAYING,
         )
         self.app.ui_state = "ROOM"
-        self.app.raise_input.value = "140"
+
+        self.app.dispatch("raise")
+
+        self.assertEqual(connection.sent, [])
+
+    def test_raise_input_is_interpreted_as_raise_amount(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(
+            phase=poker_pb2.PREFLOP,
+            hero_turn=True,
+            hero_ready=True,
+            current_bet=40,
+            min_raise=40,
+            room_status=poker_pb2.PLAYING,
+        )
+        self.app.ui_state = "ROOM"
+        self.app.raise_input.value = "40"
 
         self.app.dispatch("raise")
 
         move = connection.sent[-1].player_move
         self.assertEqual(move.type, poker_pb2.RAISE)
-        self.assertEqual(move.amount, 140)
+        self.assertEqual(move.amount, 80)
 
     def test_gm_shortcut_dispatch_sends_add_chips_command(self) -> None:
         connection = FakeConnection()

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import re
 
@@ -39,6 +40,21 @@ SUIT_LABELS = {
     "SPADES": "s",
 }
 MOVE_TYPES = {"FOLD", "CHECK", "CALL", "RAISE", "ALL_IN"}
+MOVE_ALIASES = {
+    "FOLD": "FOLD",
+    "CHECK": "CHECK",
+    "CALL": "CALL",
+    "RAISE": "RAISE",
+    "BET": "RAISE",
+    "ALL_IN": "ALL_IN",
+    "ALLIN": "ALL_IN",
+    "弃牌": "FOLD",
+    "过牌": "CHECK",
+    "跟注": "CALL",
+    "加注": "RAISE",
+    "下注": "RAISE",
+    "全下": "ALL_IN",
+}
 
 
 @dataclass(frozen=True)
@@ -159,7 +175,13 @@ def transcript_path_for_turn(root_dir: str | Path, room: PokerRoom, player_id: s
     return Path(root_dir) / room.room_id / hand_dir / safe_player / "turn_{:03d}.md".format(turn_index)
 
 
-def fallback_decision(legal_actions: tuple[str, ...], *, reason: str, transcript_path: str = "", raw_response: str = "") -> MiniMaxBotDecision:
+def fallback_decision(
+    legal_actions: tuple[str, ...],
+    *,
+    reason: str,
+    transcript_path: str = "",
+    raw_response: str = "",
+) -> MiniMaxBotDecision:
     legal = set(legal_actions)
     if "CHECK" in legal:
         return MiniMaxBotDecision("CHECK", reason=reason, source="fallback", transcript_path=transcript_path, raw_response=raw_response)
@@ -172,14 +194,108 @@ def fallback_decision(legal_actions: tuple[str, ...], *, reason: str, transcript
     raise ValueError("No legal fallback action is available.")
 
 
-def parse_decision(response_text: str, legal_actions: tuple[str, ...], transcript_path: str = "") -> MiniMaxBotDecision:
-    move_match = re.search(r"^move_type:\s*([A-Z_]+)\s*$", response_text, flags=re.MULTILINE)
-    amount_match = re.search(r"^amount:\s*(-?\d+)\s*$", response_text, flags=re.MULTILINE)
-    reason_match = re.search(r"^reason:\s*(.+?)\s*$", response_text, flags=re.MULTILINE)
+def _normalize_move_type(value: str) -> str:
+    cleaned = value.strip().strip("*`_#[](){}<>.,，。:：;；!！?？\"'").upper().replace("-", "_").replace(" ", "_")
+    if cleaned in MOVE_ALIASES:
+        return MOVE_ALIASES[cleaned]
+    return MOVE_ALIASES.get(value.strip(), cleaned)
+
+
+def _coerce_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        match = re.search(r"-?\d+", value)
+        if match:
+            return int(match.group(0))
+    return None
+
+
+def _extract_json_payload(response_text: str) -> tuple[str, int | None, str]:
+    candidates: list[str] = []
+    candidates.extend(re.findall(r"```(?:json)?\s*(.*?)```", response_text, flags=re.DOTALL | re.IGNORECASE))
+    candidates.extend(re.findall(r"(\{.*?\}|\[.*?\])", response_text, flags=re.DOTALL))
+    for candidate in candidates:
+        candidate = candidate.strip()
+        if not candidate:
+            continue
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            payload = payload[0]
+        if not isinstance(payload, dict):
+            continue
+        return (
+            _normalize_move_type(str(payload.get("move_type") or payload.get("action") or payload.get("decision") or "")),
+            _coerce_int(payload.get("amount")),
+            str(payload.get("reason") or payload.get("reasoning") or payload.get("explanation") or "").strip(),
+        )
+    return "", None, ""
+
+
+def _extract_labeled_payload(response_text: str) -> tuple[str, int | None, str]:
+    move_patterns = [
+        r"(?:move_type|action|final_action|动作|行动|最终行动|决策结果|决策)\s*[:：]\s*([A-Za-z_\u4e00-\u9fff]+)",
+        r"\*\*(?:动作|行动|最终行动|决策结果|决策)\*\*\s*[:：]?\s*([A-Za-z_\u4e00-\u9fff]+)",
+    ]
+    move_type = ""
+    for pattern in move_patterns:
+        match = re.search(pattern, response_text, flags=re.IGNORECASE)
+        if match:
+            move_type = _normalize_move_type(match.group(1))
+            break
+    amount = None
+    for pattern in (r"(?:amount|加注金额|下注金额|raise_amount)\s*[:：]\s*(-?\d+)",):
+        match = re.search(pattern, response_text, flags=re.IGNORECASE)
+        if match:
+            amount = int(match.group(1))
+            break
+    reason = ""
+    reason_match = re.search(r"(?:reason|理由|原因)\s*[:：]\s*(.+)", response_text, flags=re.IGNORECASE)
+    if reason_match:
+        reason = reason_match.group(1).strip()
+    return move_type, amount, reason
+
+
+def _extract_structured_payload(response_text: str) -> tuple[str, int | None, str]:
+    move_match = re.search(r"^move_type:\s*([^\n]+?)\s*$", response_text, flags=re.MULTILINE | re.IGNORECASE)
+    amount_match = re.search(r"^amount:\s*(-?\d+)\s*$", response_text, flags=re.MULTILINE | re.IGNORECASE)
+    reason_match = re.search(r"^reason:\s*(.+?)\s*$", response_text, flags=re.MULTILINE | re.IGNORECASE)
     if not move_match:
+        return "", None, ""
+    return (
+        _normalize_move_type(move_match.group(1)),
+        int(amount_match.group(1)) if amount_match else None,
+        reason_match.group(1).strip() if reason_match else "",
+    )
+
+
+def _extract_bare_move(response_text: str) -> str:
+    stripped = response_text.strip()
+    if "\n" not in stripped and len(stripped) <= 32:
+        normalized = _normalize_move_type(stripped)
+        if normalized in MOVE_TYPES:
+            return normalized
+    return ""
+
+
+def parse_decision(response_text: str, legal_actions: tuple[str, ...], transcript_path: str = "") -> MiniMaxBotDecision:
+    move_type, amount, reason = _extract_structured_payload(response_text)
+    if not move_type:
+        move_type, amount, reason = _extract_json_payload(response_text)
+    if not move_type:
+        move_type, amount, reason = _extract_labeled_payload(response_text)
+    if not move_type:
+        move_type = _extract_bare_move(response_text)
+    if not move_type:
         return fallback_decision(legal_actions, reason="Model response missing move_type.", transcript_path=transcript_path, raw_response=response_text)
 
-    move_type = move_match.group(1).strip().upper()
     if move_type not in MOVE_TYPES:
         return fallback_decision(
             legal_actions,
@@ -195,7 +311,7 @@ def parse_decision(response_text: str, legal_actions: tuple[str, ...], transcrip
             raw_response=response_text,
         )
 
-    amount = int(amount_match.group(1)) if amount_match else 0
+    amount = 0 if amount is None else amount
     if move_type != "RAISE":
         amount = 0
     if move_type == "RAISE" and amount <= 0:
@@ -205,7 +321,8 @@ def parse_decision(response_text: str, legal_actions: tuple[str, ...], transcrip
             transcript_path=transcript_path,
             raw_response=response_text,
         )
-    reason = reason_match.group(1).strip() if reason_match else ""
+    if not reason:
+        reason = "Parsed from model response."
     return MiniMaxBotDecision(
         move_type=move_type,
         amount=amount,
@@ -223,7 +340,7 @@ def run_minimax_bot_turn(
     api_key_file: str = "/root/TexasHoldemOnline/api.key",
     transcript_root_dir: str = "runtime_logs/minimax_bots",
     transport: str = "auto",
-    max_tokens: int = 2048,
+    max_tokens: int = 1024,
 ) -> MiniMaxBotDecision:
     prompt = build_turn_prompt(room, player_id)
     transcript_path = transcript_path_for_turn(transcript_root_dir, room, player_id)
@@ -235,8 +352,9 @@ def run_minimax_bot_turn(
             api_key=read_api_key(api_key_file),
             system=(
                 "你是一个非交互式德州扑克牌局机器人。"
-                "你必须严格根据用户提供的牌局信息做决策。"
-                "你必须严格使用固定模板输出，不能添加模板外说明。"
+                "你必须严格遵守 legal_actions。"
+                "你只能输出三行：move_type、amount、reason。"
+                "不要输出 JSON、Markdown、标题或额外解释。"
             ),
             prompt=render_turn_prompt(prompt),
             transport=transport,

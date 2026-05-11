@@ -59,7 +59,9 @@ class RemoteLlmBotMatchToolTest(unittest.TestCase):
                 {
                     "event_type": "MINIMAX_BOT_DECISION",
                     "hand_id": "room-1-000001-test",
+                    "message": "MiniMax Bot 1 minimax bot chose CALL",
                     "data": {
+                        "bot_id": "minimax:llm",
                         "decision": {"move_type": "CALL", "amount": 0},
                         "source": "model",
                         "reason": "pot odds",
@@ -78,6 +80,7 @@ class RemoteLlmBotMatchToolTest(unittest.TestCase):
             decisions = MODULE.collect_minimax_decisions(store, "room-1", ["room-1-000001-test"])
 
         self.assertEqual(len(decisions), 1)
+        self.assertEqual(decisions[0].player_id, "minimax:llm")
         self.assertEqual(decisions[0].move_type, "CALL")
         self.assertEqual(decisions[0].source, "model")
         self.assertEqual(decisions[0].reason, "pot odds")

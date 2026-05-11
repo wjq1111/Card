@@ -63,7 +63,6 @@ class MiniMaxBotDocumentTest(unittest.TestCase):
         )
         new_output = "\n".join(
             [
-                "[机器人决策]",
                 "move_type: CALL",
                 "amount: 0",
                 "reason: 底池赔率合适。",

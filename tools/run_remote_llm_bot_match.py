@@ -33,6 +33,8 @@ class MatchPlayer:
 
 @dataclass(frozen=True)
 class MiniMaxDecisionRecord:
+    player_id: str
+    player_name: str
     hand_id: str
     move_type: str
     amount: int
@@ -40,6 +42,18 @@ class MiniMaxDecisionRecord:
     reason: str
     transcript_path: str
     raw_response: str
+
+
+@dataclass(frozen=True)
+class GuardedDecisionRecord:
+    player_id: str
+    player_name: str
+    hand_id: str
+    move_type: str
+    amount: int
+    reason: str
+    scores: list[dict[str, object]]
+    features: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -245,6 +259,8 @@ def collect_minimax_decisions(
             decision = {}
         decisions.append(
             MiniMaxDecisionRecord(
+                player_id=str(data.get("bot_id", "")),
+                player_name=str(row.get("message", "")).split(" minimax bot chose ", 1)[0],
                 hand_id=hand_id,
                 move_type=str(decision.get("move_type", "")),
                 amount=int(decision.get("amount", 0) or 0),
@@ -252,6 +268,48 @@ def collect_minimax_decisions(
                 reason=str(data.get("reason", "")),
                 transcript_path=str(data.get("transcript_path", "")),
                 raw_response=str(data.get("raw_response", "")),
+            )
+        )
+    return decisions
+
+
+def collect_guarded_decisions(
+    store: GameLogStore,
+    room_id: str,
+    hand_ids: list[str],
+) -> list[GuardedDecisionRecord]:
+    room_jsonl = store.room_log_path(room_id).with_suffix(".jsonl")
+    rows = read_jsonl(room_jsonl)
+    hand_id_set = set(hand_ids)
+    decisions: list[GuardedDecisionRecord] = []
+    for row in rows:
+        if row.get("event_type") != "BOT_DECISION":
+            continue
+        hand_id = str(row.get("hand_id", ""))
+        if hand_id not in hand_id_set:
+            continue
+        data = row.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        decision = data.get("decision", {})
+        if not isinstance(decision, dict):
+            decision = {}
+        scores = data.get("scores", [])
+        if not isinstance(scores, list):
+            scores = []
+        features = data.get("features", {})
+        if not isinstance(features, dict):
+            features = {}
+        decisions.append(
+            GuardedDecisionRecord(
+                player_id=str(data.get("bot_id", "")),
+                player_name=str(row.get("message", "")).split(" bot chose ", 1)[0],
+                hand_id=hand_id,
+                move_type=str(decision.get("move_type", "")),
+                amount=int(decision.get("amount", 0) or 0),
+                reason=str(data.get("reason", "")),
+                scores=scores,
+                features=features,
             )
         )
     return decisions
@@ -291,6 +349,7 @@ def build_hand_record(
 def render_summary(
     hands: list[HandMatchRecord],
     players: list[MatchPlayer],
+    guarded_decisions: list[GuardedDecisionRecord],
     minimax_decisions: list[MiniMaxDecisionRecord],
     transcript_limit: int,
 ) -> str:
@@ -335,6 +394,20 @@ def render_summary(
         lines.append("")
 
     source_counts = Counter(decision.source for decision in minimax_decisions)
+    lines.append("All bot decisions")
+    for decision in guarded_decisions:
+        suffix = f" amount={decision.amount}" if decision.amount else ""
+        lines.append(f"  Guarded | {decision.player_name} | {decision.hand_id} | {decision.move_type}{suffix}")
+        if decision.reason:
+            lines.append(f"    reason={decision.reason}")
+    for decision in minimax_decisions:
+        suffix = f" amount={decision.amount}" if decision.amount else ""
+        lines.append(f"  LLM | {decision.player_name} | {decision.hand_id} | {decision.source} | {decision.move_type}{suffix}")
+        if decision.reason:
+            lines.append(f"    reason={decision.reason}")
+        if decision.raw_response:
+            lines.append(f"    raw={decision.raw_response[:180].replace(chr(10), ' ')}")
+
     lines.append("MiniMax decisions")
     lines.append(
         f"  total={len(minimax_decisions)} model={source_counts.get('model', 0)} fallback={source_counts.get('fallback', 0)}"
@@ -376,16 +449,18 @@ def main() -> int:
         session.leave_room()
 
     hand_records: list[HandMatchRecord] = []
-    all_decisions: list[MiniMaxDecisionRecord] = []
+    all_guarded_decisions: list[GuardedDecisionRecord] = []
+    all_minimax_decisions: list[MiniMaxDecisionRecord] = []
     players_by_seat = {player.seat_index: player for player in players}
     for result in hand_results:
         room_id = result.hand_id.split("-000001-")[0]
         store = GameLogStore(Path(args.logs_root), "server", room_id)
         action_counts = collect_hand_action_counts(store, room_id, [result.hand_id])
-        all_decisions.extend(collect_minimax_decisions(store, room_id, [result.hand_id]))
+        all_guarded_decisions.extend(collect_guarded_decisions(store, room_id, [result.hand_id]))
+        all_minimax_decisions.extend(collect_minimax_decisions(store, room_id, [result.hand_id]))
         hand_records.append(build_hand_record(result, action_counts, players_by_seat))
 
-    print(render_summary(hand_records, players, all_decisions, args.transcript_limit))
+    print(render_summary(hand_records, players, all_guarded_decisions, all_minimax_decisions, args.transcript_limit))
 
     if args.json:
         payload = {
@@ -402,7 +477,8 @@ def main() -> int:
                 }
                 for hand in hand_records
             ],
-            "minimax_decisions": [decision.__dict__ for decision in all_decisions],
+            "guarded_decisions": [decision.__dict__ for decision in all_guarded_decisions],
+            "minimax_decisions": [decision.__dict__ for decision in all_minimax_decisions],
         }
         print()
         print(json.dumps(payload, ensure_ascii=False, indent=2))

@@ -82,6 +82,22 @@ class RoomRulesTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "minimum"):
             room.player_move(raiser, "RAISE", 30)
 
+    def test_re_raise_updates_total_bet_from_current_bet(self) -> None:
+        room = self.seated_heads_up_room()
+        room.start_hand()
+
+        first_raiser = room.seats[room.active_seat].player_id
+        room.player_move(first_raiser, "RAISE", 40)
+
+        self.assertEqual(room.current_bet, 40)
+        self.assertEqual(room.min_raise, 20)
+
+        re_raiser = room.seats[room.active_seat].player_id
+        room.player_move(re_raiser, "RAISE", 80)
+
+        self.assertEqual(room.current_bet, 80)
+        self.assertEqual(room.min_raise, 40)
+
     def test_short_all_in_updates_call_amount_without_full_raise(self) -> None:
         room = PokerRoom("test", rng=random.Random(0))
         for index in range(3):
