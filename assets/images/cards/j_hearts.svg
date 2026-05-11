@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="540" viewBox="0 0 360 540">
+    <defs>
+      <linearGradient id="cardBg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#fffdf8" />
+        <stop offset="100%" stop-color="#f3eee3" />
+      </linearGradient>
+      <linearGradient id="edgeGlow" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#f8e6af" />
+        <stop offset="100%" stop-color="#d8a05b" />
+      </linearGradient>
+      <linearGradient id="medallion" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#fff7d0" />
+        <stop offset="100%" stop-color="#d8ba66" />
+      </linearGradient>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="8" stdDeviation="8" flood-color="#000000" flood-opacity="0.18" />
+      </filter>
+    </defs>
+    
+    
+    <rect x="14" y="14" width="332" height="512" rx="28" fill="#000000" opacity="0.08" />
+    <rect x="8" y="8" width="344" height="524" rx="28" fill="url(#cardBg)" stroke="url(#edgeGlow)" stroke-width="4" filter="url(#shadow)" />
+    <rect x="24" y="24" width="312" height="492" rx="22" fill="none" stroke="#d3c6a3" stroke-width="2" />
+    
+    
+    <g>
+      <text x="38" y="66" text-anchor="middle" font-size="42" font-weight="700" fill="#B22A2A" font-family="Georgia, 'Times New Roman', serif">J</text>
+      <text x="38" y="100" text-anchor="middle" font-size="30" fill="#B22A2A" font-family="'Segoe UI Symbol', 'DejaVu Sans', serif">♥</text>
+    </g>
+    
+    
+    <g transform="rotate(180 180.0 270.0)">
+      <text x="38" y="66" text-anchor="middle" font-size="42" font-weight="700" fill="#B22A2A" font-family="Georgia, 'Times New Roman', serif">J</text>
+      <text x="38" y="100" text-anchor="middle" font-size="30" fill="#B22A2A" font-family="'Segoe UI Symbol', 'DejaVu Sans', serif">♥</text>
+    </g>
+    
+    
+    <path d="M82 88 C118 64, 154 64, 180 98 C206 64, 242 64, 278 88" fill="none" stroke="#B22A2A" stroke-width="3" opacity="0.35" />
+    <path d="M82 452 C118 476, 154 476, 180 442 C206 476, 242 476, 278 452" fill="none" stroke="#B22A2A" stroke-width="3" opacity="0.35" />
+    <circle cx="180" cy="270" r="118" fill="none" stroke="#B22A2A" stroke-width="2" opacity="0.16" />
+    <circle cx="180" cy="270" r="98" fill="none" stroke="#B22A2A" stroke-width="1.5" opacity="0.12" />
+    
+    
+    <polygon points="180.0,162.0 239.4,210.6 288.0,270.0 239.4,329.4 180.0,378.0 120.6,329.4 72.0,270.0 120.6,210.6" fill="#B22A2A" opacity="0.08" />
+    <circle cx="180" cy="270" r="92" fill="url(#medallion)" stroke="#B22A2A" stroke-width="3" opacity="0.96" />
+    <circle cx="180" cy="270" r="72" fill="#fffaf0" stroke="#B22A2A" stroke-width="1.5" opacity="0.85" />
+    <text x="180" y="230" text-anchor="middle" font-size="30" font-weight="700" letter-spacing="4" fill="#B22A2A" font-family="Georgia, serif">JACK</text>
+    <text x="180" y="305" text-anchor="middle" font-size="132" fill="#B22A2A" font-family="Georgia, serif">J</text>
+    <text x="180" y="356" text-anchor="middle" font-size="42" fill="#B22A2A" font-family="'Segoe UI Symbol', 'DejaVu Sans', serif">♥ ♥ ♥</text>
+    <path d="M108 158 C138 128, 222 128, 252 158" fill="none" stroke="#B22A2A" stroke-width="4" opacity="0.42" />
+    <path d="M108 382 C138 412, 222 412, 252 382" fill="none" stroke="#B22A2A" stroke-width="4" opacity="0.42" />
+    
+    </svg>

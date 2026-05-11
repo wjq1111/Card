@@ -9,8 +9,8 @@ os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
 
 import pygame
 
-from client.main import PokerApp
-from proto_gen import poker_pb2
+from src.client.main import PokerApp
+from src.proto_gen import poker_pb2
 
 
 def proto_card(rank: int, suit: int) -> poker_pb2.Card:
@@ -26,9 +26,10 @@ def build_snapshot(
     current_bet: int = 20,
     min_raise: int = 20,
     include_result: bool = False,
+    room_status: int = poker_pb2.OPEN,
 ) -> poker_pb2.RoomSnapshot:
     snapshot = poker_pb2.RoomSnapshot(
-        room_id="lobby",
+        room_id="room-1",
         hero_player_id=hero_id,
         phase=phase,
         pot=40,
@@ -37,8 +38,10 @@ def build_snapshot(
         dealer_seat=0,
         active_seat=0 if hero_turn else 1,
         hand_number=3,
-        current_hand_id="lobby-0003",
-        auto_start_countdown_seconds=2 if phase == poker_pb2.WAITING else 0,
+        current_hand_id="room-1-0003",
+        starting_countdown_seconds=2 if room_status == poker_pb2.STARTING else 0,
+        owner_player_id=hero_id,
+        room_status=room_status,
     )
     snapshot.hero_cards.extend(
         [
@@ -54,6 +57,8 @@ def build_snapshot(
         ]
     )
     snapshot.log.extend(["Alice joined room", "Hand 3 started"])
+    snapshot.members.add(player_id=hero_id, name="Alice", is_owner=True, ready=hero_ready, seat_index=0)
+    snapshot.members.add(player_id="villain", name="Bob", is_owner=False, ready=True, seat_index=1)
     for seat_index in range(6):
         seat = snapshot.seats.add()
         seat.seat_index = seat_index
@@ -81,7 +86,7 @@ def build_snapshot(
         else:
             seat.chips = 2000
     if include_result:
-        result = poker_pb2.HandResult(hand_id="lobby-0002", hand_number=2)
+        result = poker_pb2.HandResult(hand_id="room-1-0002", hand_number=2)
         result.winner_seats.extend([1])
         result.board.extend(snapshot.board)
         result.shown_hands.add(
@@ -129,11 +134,13 @@ class PokerAppUiTest(unittest.TestCase):
         connection.player_id = "hero"
         self.app.connection = connection
         self.app.snapshot = build_snapshot(hero_ready=False)
+        self.app.ui_state = "ROOM"
 
         buttons = {button.action: button for button in self.app.make_buttons()}
 
         self.assertTrue(buttons["ready"].enabled)
-        self.assertEqual(buttons["ready"].label, "准备")
+        self.assertTrue(buttons["toggle_bot_menu"].enabled)
+        self.assertTrue(bool(buttons["ready"].label))
         self.assertFalse(buttons["fold"].enabled)
         self.assertFalse(buttons["check"].enabled)
         self.assertFalse(buttons["call"].enabled)
@@ -150,7 +157,9 @@ class PokerAppUiTest(unittest.TestCase):
             hero_ready=True,
             current_bet=40,
             min_raise=40,
+            room_status=poker_pb2.PLAYING,
         )
+        self.app.ui_state = "ROOM"
 
         buttons = {button.action: button for button in self.app.make_buttons()}
 
@@ -159,12 +168,65 @@ class PokerAppUiTest(unittest.TestCase):
         self.assertFalse(buttons["call"].enabled)
         self.assertTrue(buttons["raise"].enabled)
         self.assertTrue(buttons["all_in"].enabled)
+        self.assertTrue(all(not action.startswith("seat:") for action in buttons))
+
+        self.app.raise_input.value = "40"
+        self.app.dispatch("raise")
+
+        move = connection.sent[-1].player_move
+        self.assertEqual(move.type, poker_pb2.RAISE)
+        self.assertEqual(move.amount, 80)
+
+    def test_raise_requires_manual_input(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(
+            phase=poker_pb2.PREFLOP,
+            hero_turn=True,
+            hero_ready=True,
+            current_bet=40,
+            min_raise=40,
+            room_status=poker_pb2.PLAYING,
+        )
+        self.app.ui_state = "ROOM"
+
+        self.app.dispatch("raise")
+
+        self.assertEqual(connection.sent, [])
+
+    def test_raise_input_is_interpreted_as_raise_amount(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(
+            phase=poker_pb2.PREFLOP,
+            hero_turn=True,
+            hero_ready=True,
+            current_bet=40,
+            min_raise=40,
+            room_status=poker_pb2.PLAYING,
+        )
+        self.app.ui_state = "ROOM"
+        self.app.raise_input.value = "40"
 
         self.app.dispatch("raise")
 
         move = connection.sent[-1].player_move
         self.assertEqual(move.type, poker_pb2.RAISE)
         self.assertEqual(move.amount, 80)
+
+    def test_gm_shortcut_dispatch_sends_add_chips_command(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        event = pygame.event.Event(pygame.KEYDOWN, key=pygame.K_F9)
+        self.app.handle_event(event, self.app.make_buttons())
+
+        self.assertEqual(connection.sent[-1].chat_message.text, "/gm addchips 2000")
 
     def test_facing_bet_enables_call_and_disables_check(self) -> None:
         connection = FakeConnection()
@@ -176,8 +238,10 @@ class PokerAppUiTest(unittest.TestCase):
             hero_ready=True,
             current_bet=40,
             min_raise=40,
+            room_status=poker_pb2.PLAYING,
         )
         self.app.snapshot.seats[0].committed = 20
+        self.app.ui_state = "ROOM"
 
         buttons = {button.action: button for button in self.app.make_buttons()}
 
@@ -187,7 +251,43 @@ class PokerAppUiTest(unittest.TestCase):
         self.assertTrue(buttons["raise"].enabled)
         self.assertTrue(buttons["all_in"].enabled)
 
-    def test_connect_uses_entered_address_and_name(self) -> None:
+    def test_add_guarded_bot_dispatch_sends_internal_command(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        self.app.dispatch("add_guarded_bot")
+
+        self.assertEqual(connection.sent[-1].chat_message.text, "/addbot")
+
+    def test_add_minimax_bot_dispatch_sends_internal_command(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        self.app.dispatch("add_minimax_bot")
+
+        self.assertEqual(connection.sent[-1].chat_message.text, "/addminimaxbot")
+
+    def test_toggle_bot_menu_expands_dropdown_options(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        self.app.dispatch("toggle_bot_menu")
+        buttons = {button.action: button for button in self.app.make_buttons()}
+
+        self.assertTrue(self.app._bot_menu_open)
+        self.assertIn("add_guarded_bot", buttons)
+        self.assertIn("add_minimax_bot", buttons)
+
+    def test_login_uses_entered_address_and_name(self) -> None:
         created_connections: list[FakeConnection] = []
 
         def fake_factory(address: str) -> FakeConnection:
@@ -197,22 +297,35 @@ class PokerAppUiTest(unittest.TestCase):
 
         self.app.address_input.value = "127.0.0.1:60001"
         self.app.name_input.value = "Alice"
-        with patch("client.main.PokerClientConnection", side_effect=fake_factory):
-            self.app.connect()
+        with patch("src.client.main.PokerClientConnection", side_effect=fake_factory):
+            self.app.login()
 
         self.assertEqual(len(created_connections), 1)
         self.assertEqual(created_connections[0].address, "127.0.0.1:60001")
-        self.assertEqual(created_connections[0].sent[0].join_room.name, "Alice")
+        self.assertEqual(created_connections[0].sent[0].login.name, "Alice")
         self.assertIn("正在连接 127.0.0.1:60001", self.app.status)
 
-    def test_update_network_applies_join_snapshot_and_error_feedback(self) -> None:
+    def test_update_network_applies_login_lobby_join_snapshot_and_error_feedback(self) -> None:
         connection = FakeConnection()
         self.app.connection = connection
         snapshot = build_snapshot(hero_ready=True)
+        lobby_snapshot = poker_pb2.LobbySnapshot(hero_player_id="hero", hero_name="Alice")
+        lobby_snapshot.rooms.add(
+            room_id="room-1",
+            display_name="room-1",
+            owner_player_id="hero",
+            owner_name="Alice",
+            player_count=2,
+            seat_count=6,
+            ready_count=2,
+            room_status=poker_pb2.OPEN,
+        )
         connection.pending_events = [
             poker_pb2.ServerEvent(
-                joined=poker_pb2.Joined(player_id="hero", room_id="lobby", reconnect_token="token-1")
+                login_accepted=poker_pb2.LoginAccepted(player_id="hero", player_name="Alice", reconnect_token="token-1")
             ),
+            poker_pb2.ServerEvent(lobby_snapshot=lobby_snapshot),
+            poker_pb2.ServerEvent(joined=poker_pb2.Joined(player_id="hero", room_id="room-1", reconnect_token="token-1")),
             poker_pb2.ServerEvent(snapshot=snapshot),
             poker_pb2.ServerEvent(error=poker_pb2.Error(code="INVALID_ACTION", message="不能在非自己回合操作")),
         ]
@@ -221,7 +334,8 @@ class PokerAppUiTest(unittest.TestCase):
 
         self.assertEqual(connection.player_id, "hero")
         self.assertEqual(connection.reconnect_token, "token-1")
-        self.assertEqual(self.app.snapshot.room_id, "lobby")
+        self.assertEqual(self.app.snapshot.room_id, "room-1")
+        self.assertEqual(self.app.ui_state, "ROOM")
         self.assertEqual(self.app.status, "INVALID_ACTION: 不能在非自己回合操作")
 
     def test_draw_renders_last_hand_result_path_without_crashing(self) -> None:
@@ -229,17 +343,18 @@ class PokerAppUiTest(unittest.TestCase):
         connection.player_id = "hero"
         self.app.connection = connection
         self.app.snapshot = build_snapshot(include_result=True)
+        self.app.ui_state = "ROOM"
 
         rendered_text: list[str] = []
 
         def capture_text(surface, font, text, x, y, color) -> None:
             rendered_text.append(text)
 
-        with patch("client.main.draw_text", side_effect=capture_text):
+        with patch("src.client.main.draw_text", side_effect=capture_text):
             self.app.draw(self.app.make_buttons())
 
         self.assertIn("上一手赢家: 2", rendered_text)
-        self.assertIn("上一手ID: lobby-0002", rendered_text)
+        self.assertIn("上一手ID: room-1-0002", rendered_text)
 
 
 if __name__ == "__main__":

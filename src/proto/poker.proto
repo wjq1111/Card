@@ -1,0 +1,277 @@
+syntax = "proto3";
+
+package poker;
+
+service PokerService {
+  rpc Play(stream ClientEvent) returns (stream ServerEvent);
+}
+
+message ClientEvent {
+  string player_id = 1;
+  string request_id = 8;
+  string reconnect_token = 9;
+
+  oneof payload {
+    Login login = 2;
+    CreateRoom create_room = 3;
+    JoinRoomById join_room_by_id = 4;
+    LeaveRoom leave_room = 5;
+    SitDown sit_down = 6;
+    StandUp stand_up = 7;
+    SetReady set_ready = 10;
+    StartHand start_hand = 11;
+    PlayerMove player_move = 12;
+    Heartbeat heartbeat = 13;
+    Reconnect reconnect = 14;
+    ChatMessage chat_message = 15;
+    ListRooms list_rooms = 16;
+    ChangeSeat change_seat = 17;
+  }
+}
+
+message Login {
+  string name = 1;
+  string avatar_id = 2;
+}
+
+message ListRooms {}
+
+message CreateRoom {
+  string display_name = 1;
+}
+
+message JoinRoomById {
+  string room_id = 1;
+}
+
+message LeaveRoom {}
+
+message SitDown {
+  int32 seat_index = 1;
+}
+
+message StandUp {}
+
+message ChangeSeat {
+  int32 seat_index = 1;
+}
+
+message SetReady {
+  bool ready = 1;
+}
+
+message StartHand {}
+
+message PlayerMove {
+  MoveType type = 1;
+  int32 amount = 2;
+}
+
+message Heartbeat {}
+
+message Reconnect {
+  string player_id = 1;
+  string reconnect_token = 2;
+  string room_id = 3;
+}
+
+message ChatMessage {
+  string text = 1;
+}
+
+message ServerEvent {
+  string event_id = 10;
+  string request_id = 11;
+
+  oneof payload {
+    LoginAccepted login_accepted = 1;
+    Joined joined = 2;
+    LobbySnapshot lobby_snapshot = 3;
+    RoomSnapshot snapshot = 4;
+    Error error = 5;
+    PrivatePlayerState private_state = 6;
+    HandResult hand_result = 7;
+    ServerNotice server_notice = 8;
+    ChatMessage chat_message = 9;
+  }
+}
+
+message LoginAccepted {
+  string player_id = 1;
+  string player_name = 2;
+  string reconnect_token = 3;
+  string avatar_id = 4;
+}
+
+message Joined {
+  string player_id = 1;
+  string room_id = 2;
+  string reconnect_token = 3;
+}
+
+message Error {
+  string code = 1;
+  string message = 2;
+}
+
+message LobbyRoomInfo {
+  string room_id = 1;
+  string display_name = 2;
+  string owner_player_id = 3;
+  string owner_name = 4;
+  int32 player_count = 5;
+  int32 seat_count = 6;
+  int32 ready_count = 7;
+  RoomStatus room_status = 8;
+}
+
+message LobbySnapshot {
+  string hero_player_id = 1;
+  string hero_name = 2;
+  repeated LobbyRoomInfo rooms = 3;
+  string hero_avatar_id = 4;
+}
+
+message RoomMember {
+  string player_id = 1;
+  string name = 2;
+  bool is_owner = 3;
+  bool ready = 4;
+  int32 seat_index = 5;
+  string avatar_id = 6;
+}
+
+message RoomSnapshot {
+  string room_id = 1;
+  string hero_player_id = 2;
+  GamePhase phase = 3;
+  repeated Seat seats = 4;
+  repeated Card board = 5;
+  int32 pot = 6;
+  int32 current_bet = 7;
+  int32 min_raise = 8;
+  int32 dealer_seat = 9;
+  int32 active_seat = 10;
+  int32 hand_number = 11;
+  repeated Card hero_cards = 12;
+  repeated string log = 13;
+  HandResult last_hand_result = 14;
+  string current_hand_id = 15;
+  int32 starting_countdown_seconds = 16;
+  string owner_player_id = 17;
+  RoomStatus room_status = 18;
+  repeated RoomMember members = 19;
+}
+
+message Seat {
+  int32 seat_index = 1;
+  string player_id = 2;
+  string name = 3;
+  int32 chips = 4;
+  int32 committed = 5;
+  bool folded = 6;
+  bool all_in = 7;
+  bool ready = 8;
+  bool is_dealer = 9;
+  bool is_turn = 10;
+  int32 hole_card_count = 11;
+  int32 hand_committed = 12;
+  bool acted_this_round = 13;
+  bool is_offline = 14;
+  string avatar_id = 15;
+}
+
+message PrivatePlayerState {
+  string player_id = 1;
+  repeated Card hole_cards = 2;
+  int32 seat_index = 3;
+}
+
+message PotAward {
+  int32 amount = 1;
+  repeated int32 winner_seats = 2;
+  repeated int32 eligible_seats = 3;
+}
+
+message ShownHand {
+  int32 seat_index = 1;
+  repeated Card cards = 2;
+  string hand_name = 3;
+}
+
+message ChipDelta {
+  int32 seat_index = 1;
+  int32 delta = 2;
+  int32 final_stack = 3;
+}
+
+message HandResult {
+  string hand_id = 7;
+  int32 hand_number = 1;
+  repeated Card board = 2;
+  repeated PotAward pot_awards = 3;
+  repeated int32 winner_seats = 4;
+  repeated ShownHand shown_hands = 5;
+  repeated ChipDelta chip_deltas = 6;
+}
+
+message ServerNotice {
+  string message = 1;
+}
+
+message Card {
+  Suit suit = 1;
+  Rank rank = 2;
+}
+
+enum Suit {
+  SUIT_UNSPECIFIED = 0;
+  CLUBS = 1;
+  DIAMONDS = 2;
+  HEARTS = 3;
+  SPADES = 4;
+}
+
+enum Rank {
+  RANK_UNSPECIFIED = 0;
+  TWO = 2;
+  THREE = 3;
+  FOUR = 4;
+  FIVE = 5;
+  SIX = 6;
+  SEVEN = 7;
+  EIGHT = 8;
+  NINE = 9;
+  TEN = 10;
+  JACK = 11;
+  QUEEN = 12;
+  KING = 13;
+  ACE = 14;
+}
+
+enum GamePhase {
+  GAME_PHASE_UNSPECIFIED = 0;
+  WAITING = 1;
+  PREFLOP = 2;
+  FLOP = 3;
+  TURN = 4;
+  RIVER = 5;
+  SHOWDOWN = 6;
+  HAND_COMPLETE = 7;
+}
+
+enum RoomStatus {
+  ROOM_STATUS_UNSPECIFIED = 0;
+  OPEN = 1;
+  STARTING = 2;
+  PLAYING = 3;
+}
+
+enum MoveType {
+  MOVE_TYPE_UNSPECIFIED = 0;
+  FOLD = 1;
+  CHECK = 2;
+  CALL = 3;
+  RAISE = 4;
+  ALL_IN = 5;
+}

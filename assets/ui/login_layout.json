@@ -1,0 +1,41 @@
+{
+  "login": {
+    "breakpoint_wide": 980,
+    "shell": {
+      "margin_x": 36,
+      "margin_y": 52,
+      "min_width": 920,
+      "max_height": 620
+    },
+    "wide": {
+      "showcase_inset": 28,
+      "panel_gap": 22,
+      "showcase_width_ratio": 0.42
+    },
+    "narrow": {
+      "panel_inset": 24,
+      "panel_gap": 18,
+      "showcase_height": 190
+    },
+    "form": {
+      "padding_x": 34,
+      "address_y": 148,
+      "name_y": 236,
+      "input_height": 48,
+      "button_height": 48,
+      "button_bottom_offset": 70
+    },
+    "avatar_card": {
+      "top_gap": 24,
+      "bottom_gap": 20,
+      "min_height_closed": 60,
+      "min_height_open": 220,
+      "preview_size": 96,
+      "preview_left": 120,
+      "preview_vertical_margin": 20,
+      "grid_top": 0,
+      "grid_bottom": 12,
+      "grid_padding_x": 12
+    }
+  }
+}

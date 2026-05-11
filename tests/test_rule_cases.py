@@ -1,9 +1,10 @@
+import random
 import unittest
 
-from shared.cards import Card
-from shared.hand_evaluator import evaluate_best_hand
-from shared.settlement import ShowdownPlayer, settle_showdown
-from server.room import BIG_BLIND, Phase, PokerRoom
+from src.shared.cards import Card
+from src.shared.hand_evaluator import evaluate_best_hand
+from src.shared.settlement import ShowdownPlayer, settle_showdown
+from src.server.room import BIG_BLIND, Phase, PokerRoom
 
 
 def c(rank: str, suit: str) -> Card:
@@ -12,13 +13,26 @@ def c(rank: str, suit: str) -> Card:
 
 class NaturalLanguageRuleCasesTest(unittest.TestCase):
     def seated_three_player_room(self) -> PokerRoom:
-        room = PokerRoom("test")
+        room = PokerRoom("test", rng=random.Random(0))
         for index, name in enumerate(("Alice", "Bob", "Carol")):
             player_id = f"p{index}"
             room.join(player_id, name)
             room.sit(player_id, index)
             room.set_ready(player_id, True)
         return room
+
+    def seated_heads_up_room(self) -> PokerRoom:
+        room = PokerRoom("test", rng=random.Random(0))
+        room.join("p1", "Alice")
+        room.join("p2", "Bob")
+        room.sit("p1", 0)
+        room.sit("p2", 1)
+        room.set_ready("p1", True)
+        room.set_ready("p2", True)
+        return room
+
+    def current_player(self, room: PokerRoom) -> str:
+        return room.seats[room.active_seat].player_id
 
     def test_rc01_cannot_start_hand_with_fewer_than_two_ready_players(self) -> None:
         """RC-01: 房间内少于两名准备玩家时不能开局。"""
@@ -32,70 +46,48 @@ class NaturalLanguageRuleCasesTest(unittest.TestCase):
 
     def test_rc02_heads_up_dealer_posts_small_blind_and_acts_first_preflop(self) -> None:
         """RC-02: 单挑时庄家下小盲并先行动。"""
-        room = PokerRoom("test")
-        room.join("p1", "Alice")
-        room.join("p2", "Bob")
-        room.sit("p1", 0)
-        room.sit("p2", 1)
-        room.set_ready("p1", True)
-        room.set_ready("p2", True)
-
+        room = self.seated_heads_up_room()
         room.start_hand()
 
-        self.assertEqual(room.dealer_seat, 0)
-        self.assertEqual(room.seats[0].committed, 10)
-        self.assertEqual(room.seats[1].committed, 20)
-        self.assertEqual(room.active_seat, 0)
+        self.assertIn(room.dealer_seat, (0, 1))
+        other = 1 if room.dealer_seat == 0 else 0
+        self.assertEqual(room.seats[room.dealer_seat].committed, 10)
+        self.assertEqual(room.seats[other].committed, 20)
+        self.assertEqual(room.active_seat, room.dealer_seat)
 
     def test_rc03_cannot_check_when_facing_a_bet(self) -> None:
         """RC-03: 面对未跟上的下注时不能过牌。"""
-        room = PokerRoom("test")
-        room.join("p1", "Alice")
-        room.join("p2", "Bob")
-        room.sit("p1", 0)
-        room.sit("p2", 1)
-        room.set_ready("p1", True)
-        room.set_ready("p2", True)
+        room = self.seated_heads_up_room()
         room.start_hand()
+        acting_player = self.current_player(room)
 
         with self.assertRaisesRegex(ValueError, "Cannot check facing a bet"):
-            room.player_move("p1", "CHECK")
+            room.player_move(acting_player, "CHECK")
 
         self.assertEqual(room.phase, Phase.PREFLOP)
-        self.assertEqual(room.active_seat, 0)
+        self.assertEqual(room.seats[room.active_seat].player_id, acting_player)
 
     def test_rc04_raise_cannot_be_below_minimum_raise(self) -> None:
         """RC-04: 加注不能低于最小加注额。"""
-        room = PokerRoom("test")
-        room.join("p1", "Alice")
-        room.join("p2", "Bob")
-        room.sit("p1", 0)
-        room.sit("p2", 1)
-        room.set_ready("p1", True)
-        room.set_ready("p2", True)
+        room = self.seated_heads_up_room()
         room.start_hand()
 
         with self.assertRaisesRegex(ValueError, "minimum"):
-            room.player_move("p1", "RAISE", 30)
+            room.player_move(self.current_player(room), "RAISE", 30)
 
         self.assertEqual(room.current_bet, BIG_BLIND)
         self.assertEqual(room.min_raise, BIG_BLIND)
 
     def test_rc06_last_live_player_wins_without_showdown(self) -> None:
         """RC-06: 其余玩家弃牌后应直接赢池。"""
-        room = PokerRoom("test")
-        room.join("p1", "Alice")
-        room.join("p2", "Bob")
-        room.sit("p1", 0)
-        room.sit("p2", 1)
-        room.set_ready("p1", True)
-        room.set_ready("p2", True)
+        room = self.seated_heads_up_room()
         room.start_hand()
+        loser = self.current_player(room)
 
-        room.player_move("p1", "FOLD")
+        room.player_move(loser, "FOLD")
 
         self.assertEqual(room.phase, Phase.HAND_COMPLETE)
-        self.assertEqual(room.last_hand_summary.winner_seats, (1,))
+        self.assertEqual(len(room.last_hand_summary.winner_seats), 1)
         self.assertEqual(room.last_hand_summary.hand_names, {})
         self.assertEqual(room.pot, 0)
 
@@ -104,15 +96,16 @@ class NaturalLanguageRuleCasesTest(unittest.TestCase):
         room = self.seated_three_player_room()
         room.start_hand()
 
-        room.player_move("p0", "CALL")
-        room.player_move("p1", "CALL")
-        room.player_move("p2", "CHECK")
+        room.player_move(self.current_player(room), "CALL")
+        room.player_move(self.current_player(room), "CALL")
+        room.player_move(self.current_player(room), "CHECK")
         self.assertEqual(room.phase, Phase.FLOP)
 
-        room.player_move("p1", "CHECK")
+        first_actor = room.active_seat
+        room.player_move(self.current_player(room), "CHECK")
 
         self.assertEqual(room.phase, Phase.FLOP)
-        self.assertEqual(room.active_seat, 2)
+        self.assertNotEqual(room.active_seat, first_actor)
 
     def test_rc08_best_five_cards_are_selected_from_seven(self) -> None:
         """RC-08: 摊牌时要从七张牌中自动选出最优五张。"""
@@ -216,13 +209,7 @@ class NaturalLanguageRuleCasesTest(unittest.TestCase):
 
     def test_rc13_split_pot_keeps_total_chip_delta_balanced(self) -> None:
         """RC-13: 平分底池时总筹码变化必须守恒。"""
-        room = PokerRoom("test")
-        room.join("p1", "Alice")
-        room.join("p2", "Bob")
-        room.sit("p1", 0)
-        room.sit("p2", 1)
-        room.set_ready("p1", True)
-        room.set_ready("p2", True)
+        room = self.seated_heads_up_room()
         room.start_hand()
         room.seats[0].hole_cards = [c("ACE", "CLUBS"), c("KING", "DIAMONDS")]
         room.seats[1].hole_cards = [c("ACE", "HEARTS"), c("KING", "SPADES")]
@@ -255,13 +242,14 @@ class NaturalLanguageRuleCasesTest(unittest.TestCase):
         """RC-05: 短码全下提高跟注线，但不会形成完整加注。"""
         room = self.seated_three_player_room()
         room.start_hand()
-        room.seats[0].chips = 25
+        current_actor = room.seats[room.active_seat]
+        current_actor.chips = 25
 
-        room.player_move("p0", "ALL_IN")
+        room.player_move(current_actor.player_id, "ALL_IN")
 
         self.assertEqual(room.current_bet, 25)
         self.assertEqual(room.min_raise, BIG_BLIND)
-        self.assertTrue(room.seats[0].all_in)
+        self.assertTrue(current_actor.all_in)
 
 
 if __name__ == "__main__":

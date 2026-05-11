@@ -3,3 +3,4 @@ grpcio-tools==1.71.0
 protobuf==5.29.4
 pygame==2.6.1
 pyinstaller==6.13.0
+anthropic==0.52.2
