@@ -79,11 +79,14 @@ class RemoteMatchSession:
 
     def leave_room(self) -> None:
         self.send(poker_pb2.ClientEvent(leave_room=poker_pb2.LeaveRoom()))
-        self.wait_for(
-            lambda: self.snapshot is None or self.snapshot.room_id != self.room_id,
-            timeout=10.0,
-            description="room to be left",
-        )
+        try:
+            self.wait_for(
+                lambda: self.snapshot is None or self.snapshot.room_id != self.room_id,
+                timeout=3.0,
+                description="room to be left",
+            )
+        except TimeoutError:
+            pass
 
     def add_guarded_bot(self) -> None:
         self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addbot")))
