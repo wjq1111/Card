@@ -285,12 +285,26 @@ def _extract_bare_move(response_text: str) -> str:
     return ""
 
 
+def _extract_three_line_payload(response_text: str) -> tuple[str, int | None, str]:
+    lines = [line.strip() for line in response_text.splitlines() if line.strip()]
+    if len(lines) < 2 or len(lines) > 4:
+        return "", None, ""
+    move_type = _normalize_move_type(lines[0])
+    if move_type not in MOVE_TYPES:
+        return "", None, ""
+    amount = _coerce_int(lines[1])
+    reason = lines[2] if len(lines) >= 3 else ""
+    return move_type, amount, reason
+
+
 def parse_decision(response_text: str, legal_actions: tuple[str, ...], transcript_path: str = "") -> MiniMaxBotDecision:
     move_type, amount, reason = _extract_structured_payload(response_text)
     if not move_type:
         move_type, amount, reason = _extract_json_payload(response_text)
     if not move_type:
         move_type, amount, reason = _extract_labeled_payload(response_text)
+    if not move_type:
+        move_type, amount, reason = _extract_three_line_payload(response_text)
     if not move_type:
         move_type = _extract_bare_move(response_text)
     if not move_type:

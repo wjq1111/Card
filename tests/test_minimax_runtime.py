@@ -31,6 +31,15 @@ class MiniMaxRuntimeParseTest(unittest.TestCase):
         self.assertEqual(decision.amount, 0)
         self.assertEqual(decision.source, "model")
 
+    def test_parse_decision_accepts_three_line_payload_without_labels(self) -> None:
+        decision = parse_decision(
+            "CALL\n30\n底池赔率合适。",
+            ("FOLD", "CALL", "RAISE", "ALL_IN"),
+        )
+        self.assertEqual(decision.move_type, "CALL")
+        self.assertEqual(decision.amount, 0)
+        self.assertEqual(decision.source, "model")
+
 
 if __name__ == "__main__":
     unittest.main()
