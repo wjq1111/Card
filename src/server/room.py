@@ -128,6 +128,19 @@ class HandActionRecord:
     current_bet_before: int
     was_aggressive: bool
 
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "player_id": self.player_id,
+            "seat_index": self.seat_index,
+            "phase": self.phase,
+            "move_type": self.move_type,
+            "amount": self.amount,
+            "to_call": self.to_call,
+            "pot_before": self.pot_before,
+            "current_bet_before": self.current_bet_before,
+            "was_aggressive": self.was_aggressive,
+        }
+
 
 class PokerRoom:
     def __init__(
@@ -342,6 +355,9 @@ class PokerRoom:
                 "dealer_seat": self.dealer_seat,
                 "small_blind_seat": small_blind,
                 "big_blind_seat": big_blind,
+                "small_blind_amount": SMALL_BLIND,
+                "big_blind_amount": BIG_BLIND,
+                "seats": [self.seat_snapshot_for_log(seat) for seat in self.seats if seat.player_id and seat.hole_cards],
             },
         )
 
@@ -356,21 +372,69 @@ class PokerRoom:
         to_call_before = max(0, self.current_bet - seat.committed)
         pot_before = self.pot
         current_bet_before = self.current_bet
+        min_raise_before = self.min_raise
+        committed_before = seat.committed
+        chips_before = seat.chips
         target_bet = amount
 
         if move_type == "FOLD":
             seat.folded = True
             seat.acted_this_round = True
-            self.log_line(f"{seat.name} folded", event_type="ACTION", hand_id=self.current_hand_id)
+            self.log_line(
+                f"{seat.name} folded",
+                event_type="ACTION",
+                hand_id=self.current_hand_id,
+                data=self.action_log_data(
+                    seat,
+                    move_type,
+                    amount=target_bet,
+                    to_call_before=to_call_before,
+                    pot_before=pot_before,
+                    current_bet_before=current_bet_before,
+                    min_raise_before=min_raise_before,
+                    committed_before=committed_before,
+                    chips_before=chips_before,
+                ),
+            )
         elif move_type == "CHECK":
             if seat.committed != self.current_bet:
                 raise ValueError("Cannot check facing a bet")
             seat.acted_this_round = True
-            self.log_line(f"{seat.name} checked", event_type="ACTION", hand_id=self.current_hand_id)
+            self.log_line(
+                f"{seat.name} checked",
+                event_type="ACTION",
+                hand_id=self.current_hand_id,
+                data=self.action_log_data(
+                    seat,
+                    move_type,
+                    amount=target_bet,
+                    to_call_before=to_call_before,
+                    pot_before=pot_before,
+                    current_bet_before=current_bet_before,
+                    min_raise_before=min_raise_before,
+                    committed_before=committed_before,
+                    chips_before=chips_before,
+                ),
+            )
         elif move_type == "CALL":
             self.commit(seat, self.current_bet - seat.committed)
             seat.acted_this_round = True
-            self.log_line(f"{seat.name} called", event_type="ACTION", hand_id=self.current_hand_id)
+            self.log_line(
+                f"{seat.name} called",
+                event_type="ACTION",
+                hand_id=self.current_hand_id,
+                data=self.action_log_data(
+                    seat,
+                    move_type,
+                    amount=target_bet,
+                    to_call_before=to_call_before,
+                    pot_before=pot_before,
+                    current_bet_before=current_bet_before,
+                    min_raise_before=min_raise_before,
+                    committed_before=committed_before,
+                    chips_before=chips_before,
+                ),
+            )
         elif move_type == "RAISE":
             if target_bet < self.current_bet + self.min_raise:
                 raise ValueError("Raise is below the minimum")
@@ -380,7 +444,22 @@ class PokerRoom:
             self.current_bet = target_bet
             self.commit(seat, target_bet - seat.committed)
             self.reset_action_after_raise(seat)
-            self.log_line(f"{seat.name} raised to {target_bet}", event_type="ACTION", hand_id=self.current_hand_id)
+            self.log_line(
+                f"{seat.name} raised to {target_bet}",
+                event_type="ACTION",
+                hand_id=self.current_hand_id,
+                data=self.action_log_data(
+                    seat,
+                    move_type,
+                    amount=target_bet,
+                    to_call_before=to_call_before,
+                    pot_before=pot_before,
+                    current_bet_before=current_bet_before,
+                    min_raise_before=min_raise_before,
+                    committed_before=committed_before,
+                    chips_before=chips_before,
+                ),
+            )
         elif move_type == "ALL_IN":
             target_bet = seat.committed + seat.chips
             self.commit(seat, seat.chips)
@@ -392,7 +471,22 @@ class PokerRoom:
                 self.reset_action_after_raise(seat)
             elif target_bet > self.current_bet:
                 self.current_bet = target_bet
-            self.log_line(f"{seat.name} moved all in", event_type="ACTION", hand_id=self.current_hand_id)
+            self.log_line(
+                f"{seat.name} moved all in",
+                event_type="ACTION",
+                hand_id=self.current_hand_id,
+                data=self.action_log_data(
+                    seat,
+                    move_type,
+                    amount=target_bet,
+                    to_call_before=to_call_before,
+                    pot_before=pot_before,
+                    current_bet_before=current_bet_before,
+                    min_raise_before=min_raise_before,
+                    committed_before=committed_before,
+                    chips_before=chips_before,
+                ),
+            )
         else:
             raise ValueError("Unknown move")
 
@@ -448,7 +542,12 @@ class PokerRoom:
             return
 
         self.active_seat = self.next_action_seat(self.dealer_seat)
-        self.log_line(f"{self.phase.value} dealt", event_type="STREET", hand_id=self.current_hand_id)
+        self.log_line(
+            f"{self.phase.value} dealt",
+            event_type="STREET",
+            hand_id=self.current_hand_id,
+            data={"board": [self.card_to_log(card) for card in self.board]},
+        )
         live = [seat for seat in self.seats if seat.player_id and not seat.folded and seat.hole_cards]
         if self.active_seat == -1 or len([seat for seat in live if not seat.all_in]) <= 1:
             self.advance_street()
@@ -476,7 +575,16 @@ class PokerRoom:
     def award_uncontested_pot(self, winner: Seat) -> None:
         pot_before_award = self.pot
         winner.chips += self.pot
-        self.log_line(f"{winner.name} won {self.pot}", event_type="RESULT", hand_id=self.current_hand_id)
+        self.log_line(
+            f"{winner.name} won {self.pot}",
+            event_type="RESULT",
+            hand_id=self.current_hand_id,
+            data={
+                "winner_seat": winner.seat_index,
+                "amount": pot_before_award,
+                "board": [self.card_to_log(card) for card in self.board],
+            },
+        )
         self.pot = 0
         self.last_hand_summary = HandSummary(
             hand_id=self.current_hand_id,
@@ -521,6 +629,11 @@ class PokerRoom:
                 f"{self.seats[seat_index].name} won with {hand.name}",
                 event_type="RESULT",
                 hand_id=self.current_hand_id,
+                data={
+                    "winner_seat": seat_index,
+                    "hand_name": hand.name,
+                    "board": [self.card_to_log(card) for card in self.board],
+                },
             )
         self.last_hand_summary = self.create_hand_summary(result)
         self.sync_all_player_chips()
@@ -610,6 +723,87 @@ class PokerRoom:
                 data=data,
             )
 
+    def card_to_log(self, card: Card) -> dict[str, str]:
+        return {"rank": card.rank, "suit": card.suit}
+
+    def cards_to_log(self, cards: Iterable[Card]) -> list[dict[str, str]]:
+        return [self.card_to_log(card) for card in cards]
+
+    def seat_snapshot_for_log(self, seat: Seat) -> dict[str, object]:
+        return {
+            "seat_index": seat.seat_index,
+            "player_id": seat.player_id,
+            "name": seat.name,
+            "chips": seat.chips,
+            "committed": seat.committed,
+            "ready": seat.ready,
+            "hole_cards": self.cards_to_log(seat.hole_cards),
+        }
+
+    def action_log_data(
+        self,
+        seat: Seat,
+        move_type: str,
+        *,
+        amount: int,
+        to_call_before: int,
+        pot_before: int,
+        current_bet_before: int,
+        min_raise_before: int,
+        committed_before: int,
+        chips_before: int,
+    ) -> dict[str, object]:
+        return {
+            "player_id": seat.player_id,
+            "player_name": seat.name,
+            "seat_index": seat.seat_index,
+            "move_type": move_type,
+            "amount": amount,
+            "chips_put_in": self.pot - pot_before,
+            "to_call_before": to_call_before,
+            "pot_before": pot_before,
+            "pot_after": self.pot,
+            "current_bet_before": current_bet_before,
+            "current_bet_after": self.current_bet,
+            "min_raise_before": min_raise_before,
+            "min_raise_after": self.min_raise,
+            "committed_before": committed_before,
+            "committed_after": seat.committed,
+            "chips_before": chips_before,
+            "chips_after": seat.chips,
+        }
+
+    def hand_summary_data(self) -> dict[str, object]:
+        if not self.last_hand_summary:
+            return {"winners": []}
+        shown_hands = [
+            {
+                "seat_index": seat.seat_index,
+                "player_id": seat.player_id,
+                "player_name": seat.name,
+                "hole_cards": self.cards_to_log(seat.hole_cards),
+                "hand_name": self.last_hand_summary.hand_names[seat.seat_index],
+            }
+            for seat in self.seats
+            if seat.player_id and seat.seat_index in self.last_hand_summary.hand_names
+        ]
+        return {
+            "board": self.cards_to_log(self.last_hand_summary.board),
+            "winners": list(self.last_hand_summary.winner_seats),
+            "awards": [
+                {
+                    "amount": award.amount,
+                    "winner_seats": list(award.winner_seats),
+                    "eligible_seats": list(award.eligible_seats),
+                }
+                for award in self.last_hand_summary.awards
+            ],
+            "chip_deltas": self.last_hand_summary.chip_deltas,
+            "final_stacks": self.last_hand_summary.final_stacks,
+            "shown_hands": shown_hands,
+            "actions": [record.as_dict() for record in self.hand_action_log],
+        }
+
     def record_player_action(
         self,
         player_id: str,
@@ -695,6 +889,7 @@ class PokerRoom:
         return {seat.seat_index: seat.chips for seat in self.seats if seat.player_id}
 
     def finish_hand(self) -> None:
+        summary_data = self.hand_summary_data()
         if self.last_hand_summary:
             for seat_index in self.last_hand_summary.winner_seats:
                 seat = self.seats[seat_index]
@@ -713,7 +908,7 @@ class PokerRoom:
             f"Hand {self.hand_number} completed",
             event_type="HAND_END",
             hand_id=self.current_hand_id,
-            data={"winners": list(self.last_hand_summary.winner_seats) if self.last_hand_summary else []},
+            data=summary_data,
         )
 
     def reset_table_for_next_hand(self) -> None:

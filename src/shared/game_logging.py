@@ -53,6 +53,17 @@ class GameLogStore:
         safe_hand = sanitize_name(hand_id) or f"hand_{hand_number:06d}"
         return self.room_dir(room_id) / "hands" / f"{hand_number:06d}_{safe_hand}.log"
 
+    def hand_log_jsonl_path(self, room_id: str, hand_number: int, hand_id: str) -> Path:
+        return self.hand_log_path(room_id, hand_number, hand_id).with_suffix(".jsonl")
+
+    def find_hand_log_jsonl(self, room_id: str, hand_id: str) -> Path | None:
+        hands_dir = self.room_dir(room_id) / "hands"
+        if not hands_dir.exists():
+            return None
+        safe_hand = sanitize_name(hand_id)
+        matches = sorted(hands_dir.glob(f"*_{safe_hand}.jsonl"))
+        return matches[-1] if matches else None
+
     def write(
         self,
         room_id: str,
@@ -92,7 +103,7 @@ class GameLogStore:
                 hand_path.parent.mkdir(parents=True, exist_ok=True)
                 with hand_path.open("a", encoding="utf-8") as handle:
                     handle.write(line + "\n")
-                with hand_path.with_suffix(".jsonl").open("a", encoding="utf-8") as handle:
+                with self.hand_log_jsonl_path(room_id, hand_number, hand_id).open("a", encoding="utf-8") as handle:
                     handle.write(json_line + "\n")
 
     def recent_lines(self, room_id: str, limit: int = 20) -> list[str]:

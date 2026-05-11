@@ -3,6 +3,7 @@ import unittest
 
 from src.server.bots.controller import build_observation, play_bot_turn
 from src.server.bots.models import BotObservation, BotProfile, OpponentSnapshot, ScoreWeights
+from src.server.bots.features import extract_features
 from src.server.bots.policy import decide_action, legal_candidates
 from src.server.room import Phase, PokerRoom
 from src.shared.cards import Card
@@ -140,6 +141,22 @@ class BotPolicyTest(unittest.TestCase):
             self.assertGreaterEqual(candidate.amount, observation.minimum_raise_to)
             self.assertLess(candidate.amount, observation.maximum_raise_to)
 
+    def test_raise_candidates_are_rounded_to_human_like_bet_sizes(self) -> None:
+        observation = obs(
+            pot=295,
+            current_bet=50,
+            min_raise=50,
+            committed=0,
+            chips=1000,
+            legal_actions=("FOLD", "CALL", "RAISE", "ALL_IN"),
+        )
+
+        raises = [candidate.amount for candidate in legal_candidates(observation) if candidate.move_type == "RAISE"]
+
+        self.assertTrue(raises)
+        self.assertTrue(all(amount % 10 == 0 for amount in raises))
+        self.assertNotIn(147, raises)
+
     def test_custom_weights_can_flip_decision(self) -> None:
         observation = obs(
             hole_cards=(c("ACE", "HEARTS"), c("KING", "HEARTS")),
@@ -153,12 +170,17 @@ class BotPolicyTest(unittest.TestCase):
             name="foldy",
             call_pot_odds_fit=0.05,
             call_draw_strength=0.05,
+            call_equity=-0.20,
             fold_pressure_score=0.80,
+            fold_equity=0.70,
             fold_pot_odds_fit=-0.05,
             raise_value_made_strength=0.05,
             raise_bluff_draw_strength=0.05,
+            raise_equity=0.0,
             raise_aggression=0.0,
+            raise_opponent_fold_to_raise=0.0,
             all_in_weak_penalty=-1.0,
+            all_in_equity=0.0,
         )
 
         default_decision = decide_action(observation, profile=PROFILE, weights=aggressive_weights, rng=random.Random(0))
@@ -188,12 +210,18 @@ class BotPolicyTest(unittest.TestCase):
         folding_weights = ScoreWeights(
             call_made_strength=0.10,
             call_draw_strength=0.05,
+            call_equity=-0.10,
             call_pot_odds_fit=0.10,
             call_opponent_aggression=0.0,
             fold_pressure_score=0.65,
+            fold_equity=0.70,
             fold_recent_raise_pressure=0.45,
         )
-        hero_calling_weights = folding_weights.updated(call_opponent_aggression=0.80, fold_recent_raise_pressure=0.05)
+        hero_calling_weights = folding_weights.updated(
+            call_equity=0.25,
+            call_opponent_aggression=0.80,
+            fold_recent_raise_pressure=0.05,
+        )
         observation = obs(
             hole_cards=(c("ACE", "SPADES"), c("QUEEN", "SPADES")),
             board_cards=(c("ACE", "CLUBS"), c("TEN", "HEARTS"), c("FOUR", "DIAMONDS"), c("TWO", "CLUBS")),
@@ -209,6 +237,185 @@ class BotPolicyTest(unittest.TestCase):
 
         self.assertEqual(fold_decision.move_type, "FOLD")
         self.assertEqual(call_decision.move_type, "CALL")
+
+    def test_monte_carlo_equity_distinguishes_premium_from_trash_preflop(self) -> None:
+        premium_features = extract_features(
+            obs(phase="PREFLOP", hole_cards=(c("ACE", "HEARTS"), c("ACE", "SPADES")), board_cards=()),
+            profile=PROFILE,
+            rng=random.Random(0),
+        )
+        trash_features = extract_features(
+            obs(phase="PREFLOP", hole_cards=(c("SEVEN", "CLUBS"), c("TWO", "DIAMONDS")), board_cards=()),
+            profile=PROFILE,
+            rng=random.Random(0),
+        )
+
+        self.assertGreater(premium_features.equity, trash_features.equity)
+        self.assertGreater(premium_features.equity, 0.70)
+        self.assertLess(trash_features.equity, 0.45)
+
+    def test_pressure_weighted_opponent_model_favors_current_aggressor(self) -> None:
+        aggressive = OpponentSnapshot(
+            player_id="raiser",
+            seat_index=1,
+            chips=880,
+            committed=120,
+            hand_committed=120,
+            folded=False,
+            all_in=False,
+            acted_this_round=True,
+            last_action="RAISE",
+            last_action_phase="TURN",
+            vpip_rate=0.70,
+            pfr_rate=0.45,
+            aggression_factor=4.0,
+            fold_to_raise_rate=0.15,
+            recent_raise_rate=0.90,
+        )
+        passive = OpponentSnapshot(
+            player_id="caller",
+            seat_index=2,
+            chips=1000,
+            committed=0,
+            hand_committed=0,
+            folded=False,
+            all_in=False,
+            acted_this_round=False,
+            last_action="CHECK",
+            last_action_phase="TURN",
+            vpip_rate=0.20,
+            pfr_rate=0.05,
+            aggression_factor=0.2,
+            fold_to_raise_rate=0.55,
+            recent_raise_rate=0.05,
+        )
+        features = extract_features(
+            obs(
+                phase="TURN",
+                hole_cards=(c("ACE", "SPADES"), c("QUEEN", "SPADES")),
+                board_cards=(c("ACE", "CLUBS"), c("TEN", "HEARTS"), c("FOUR", "DIAMONDS"), c("TWO", "CLUBS")),
+                pot=300,
+                current_bet=120,
+                committed=0,
+                legal_actions=("FOLD", "CALL"),
+                opponents=(aggressive, passive),
+            ),
+            profile=PROFILE,
+            rng=random.Random(0),
+        )
+
+        self.assertGreater(features.opponent_aggression, 0.75)
+        self.assertGreater(features.recent_raise_pressure, 0.65)
+
+    def test_preflop_unopened_premium_prefers_raise(self) -> None:
+        decision = decide_action(
+            obs(
+                phase="PREFLOP",
+                hole_cards=(c("ACE", "HEARTS"), c("KING", "HEARTS")),
+                board_cards=(),
+                pot=30,
+                current_bet=20,
+                min_raise=20,
+                committed=0,
+                legal_actions=("FOLD", "CALL", "RAISE", "ALL_IN"),
+            ),
+            profile=PROFILE,
+            rng=random.Random(0),
+        )
+
+        self.assertEqual(decision.move_type, "RAISE")
+
+    def test_preflop_facing_three_bet_marginal_hand_prefers_fold(self) -> None:
+        decision = decide_action(
+            obs(
+                phase="PREFLOP",
+                hole_cards=(c("NINE", "HEARTS"), c("SEVEN", "CLUBS")),
+                board_cards=(),
+                pot=150,
+                current_bet=100,
+                min_raise=20,
+                committed=20,
+                legal_actions=("FOLD", "CALL", "RAISE", "ALL_IN"),
+                opponents=(
+                    OpponentSnapshot(
+                        player_id="raiser",
+                        seat_index=1,
+                        chips=900,
+                        committed=100,
+                        hand_committed=100,
+                        folded=False,
+                        all_in=False,
+                        acted_this_round=True,
+                        last_action="RAISE",
+                        last_action_phase="PREFLOP",
+                        vpip_rate=0.28,
+                        pfr_rate=0.20,
+                        aggression_factor=1.4,
+                        fold_to_raise_rate=0.35,
+                        recent_raise_rate=0.25,
+                    ),
+                    OpponentSnapshot(
+                        player_id="re-raiser",
+                        seat_index=2,
+                        chips=900,
+                        committed=100,
+                        hand_committed=100,
+                        folded=False,
+                        all_in=False,
+                        acted_this_round=True,
+                        last_action="RAISE",
+                        last_action_phase="PREFLOP",
+                        vpip_rate=0.22,
+                        pfr_rate=0.18,
+                        aggression_factor=1.7,
+                        fold_to_raise_rate=0.30,
+                        recent_raise_rate=0.30,
+                    ),
+                ),
+            ),
+            profile=PROFILE,
+            rng=random.Random(0),
+        )
+
+        self.assertEqual(decision.move_type, "FOLD")
+
+    def test_preflop_short_stack_strong_hand_prefers_all_in(self) -> None:
+        decision = decide_action(
+            obs(
+                phase="PREFLOP",
+                hole_cards=(c("ACE", "HEARTS"), c("KING", "SPADES")),
+                board_cards=(),
+                pot=170,
+                current_bet=80,
+                min_raise=20,
+                committed=20,
+                chips=160,
+                legal_actions=("FOLD", "CALL", "RAISE", "ALL_IN"),
+                opponents=(
+                    OpponentSnapshot(
+                        player_id="raiser",
+                        seat_index=1,
+                        chips=920,
+                        committed=80,
+                        hand_committed=80,
+                        folded=False,
+                        all_in=False,
+                        acted_this_round=True,
+                        last_action="RAISE",
+                        last_action_phase="PREFLOP",
+                        vpip_rate=0.32,
+                        pfr_rate=0.22,
+                        aggression_factor=1.8,
+                        fold_to_raise_rate=0.28,
+                        recent_raise_rate=0.35,
+                    ),
+                ),
+            ),
+            profile=PROFILE,
+            rng=random.Random(0),
+        )
+
+        self.assertEqual(decision.move_type, "ALL_IN")
 
 
 class BotControllerTest(unittest.TestCase):

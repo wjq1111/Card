@@ -13,6 +13,7 @@ import grpc
 from src.proto_gen import poker_pb2, poker_pb2_grpc
 from src.server.bots.controller import play_bot_turn
 from src.server.bots.models import BotProfile, ScoreWeights
+from src.server.minimax_bots.runtime import run_minimax_bot_turn
 from src.server.chip_store import PlayerChipStore
 from src.server.room import PokerRoom, RoomStatus, STARTING_CHIPS
 from src.shared.cards import Card
@@ -20,7 +21,9 @@ from src.shared.game_logging import GameLogStore
 
 
 BOT_PREFIX = "bot:"
+MINIMAX_BOT_PREFIX = "minimax:"
 BOT_AVATAR_ID = "violet"
+MINIMAX_BOT_AVATAR_ID = "ocean"
 DEFAULT_BOT_PROFILE = BotProfile(
     name="guarded",
     looseness=0.55,
@@ -52,6 +55,9 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.bot_weights: dict[str, ScoreWeights] = {}
         self.bot_rngs: dict[str, random.Random] = {}
         self.bot_action_deadlines: dict[str, tuple[tuple[object, ...], float]] = {}
+        self.minimax_bot_transport = "auto"
+        self.minimax_bot_api_key_file = "api.key"
+        self.minimax_transcript_root_dir = "runtime_logs/minimax_bots"
         self.lock = threading.RLock()
         self.server_logs = GameLogStore("runtime_logs", "server", "rooms")
         self.chip_store = PlayerChipStore("runtime_logs/player_chips.json")
@@ -280,6 +286,8 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             message = event.chat_message.text.strip()
             if message == "/addbot":
                 self.add_guarded_bot(player_id, room)
+            elif message == "/addminimaxbot":
+                self.add_minimax_bot(player_id, room)
             elif message.startswith("/gm addchips "):
                 self.grant_debug_chips(player_id, room, int(message.split()[-1]))
             else:
@@ -420,7 +428,13 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         return poker_pb2.ServerEvent(event_id=uuid.uuid4().hex, request_id=request_id, **payload)
 
     def is_bot_player(self, player_id: str) -> bool:
+        return self.is_guarded_bot_player(player_id) or self.is_minimax_bot_player(player_id)
+
+    def is_guarded_bot_player(self, player_id: str) -> bool:
         return player_id.startswith(BOT_PREFIX)
+
+    def is_minimax_bot_player(self, player_id: str) -> bool:
+        return player_id.startswith(MINIMAX_BOT_PREFIX)
 
     def human_players_in_room(self, room: PokerRoom) -> list[str]:
         return [player_id for player_id in room.players if not self.is_bot_player(player_id)]
@@ -437,9 +451,10 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         self.player_avatars.pop(bot_id, None)
         self.player_locations.pop(bot_id, None)
         self.player_chip_balances.pop(bot_id, None)
-        self.bot_profiles.pop(bot_id, None)
-        self.bot_weights.pop(bot_id, None)
-        self.bot_rngs.pop(bot_id, None)
+        if self.is_guarded_bot_player(bot_id):
+            self.bot_profiles.pop(bot_id, None)
+            self.bot_weights.pop(bot_id, None)
+            self.bot_rngs.pop(bot_id, None)
         self.bot_action_deadlines.pop(bot_id, None)
 
     def cleanup_room_bots(self, room: PokerRoom) -> None:
@@ -472,6 +487,28 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
         room.set_ready(bot_id, True)
         room.log_line(f"{bot_name} joined as a guarded bot", event_type="BOT")
 
+    def add_minimax_bot(self, player_id: str, room: PokerRoom) -> None:
+        if player_id != room.owner_player_id:
+            raise ValueError("Only the room owner can add a bot")
+        if room.room_status != RoomStatus.OPEN or room.phase.name != "WAITING":
+            raise ValueError("Bots can only be added before a hand starts")
+        open_seat = next((seat.seat_index for seat in room.seats if not seat.player_id), -1)
+        if open_seat < 0:
+            raise ValueError("No open seat is available for a bot")
+
+        bot_number = sum(1 for member_id in room.players if self.is_minimax_bot_player(member_id)) + 1
+        bot_id = f"{MINIMAX_BOT_PREFIX}{uuid.uuid4().hex[:8]}"
+        bot_name = f"MiniMax Bot {bot_number}"
+        self.player_names[bot_id] = bot_name
+        self.player_avatars[bot_id] = MINIMAX_BOT_AVATAR_ID
+        self.player_chip_balances[bot_id] = STARTING_CHIPS
+        self.player_locations[bot_id] = room.room_id
+
+        room.join(bot_id, bot_name, MINIMAX_BOT_AVATAR_ID)
+        room.sit(bot_id, open_seat)
+        room.set_ready(bot_id, True)
+        room.log_line(f"{bot_name} joined as a minimax bot", event_type="BOT")
+
     def run_service_bots(self, room: PokerRoom, now: float | None = None) -> bool:
         now = time.monotonic() if now is None else now
         changed = False
@@ -497,13 +534,47 @@ class PokerService(poker_pb2_grpc.PokerServiceServicer):
             if now < tracked[1]:
                 break
             self.bot_action_deadlines.pop(seat.player_id, None)
-            play_bot_turn(
-                room,
-                seat.player_id,
-                profile=self.bot_profiles.get(seat.player_id, DEFAULT_BOT_PROFILE),
-                weights=self.bot_weights.get(seat.player_id, DEFAULT_BOT_WEIGHTS),
-                rng=self.bot_rngs.setdefault(seat.player_id, random.Random(0)),
-            )
+            if self.is_guarded_bot_player(seat.player_id):
+                play_bot_turn(
+                    room,
+                    seat.player_id,
+                    profile=self.bot_profiles.get(seat.player_id, DEFAULT_BOT_PROFILE),
+                    weights=self.bot_weights.get(seat.player_id, DEFAULT_BOT_WEIGHTS),
+                    rng=self.bot_rngs.setdefault(seat.player_id, random.Random(0)),
+                )
+            elif self.is_minimax_bot_player(seat.player_id):
+                decision = run_minimax_bot_turn(
+                    room,
+                    seat.player_id,
+                    api_key_file=self.minimax_bot_api_key_file,
+                    transcript_root_dir=self.minimax_transcript_root_dir,
+                    transport=self.minimax_bot_transport,
+                )
+                try:
+                    room.player_move(seat.player_id, decision.move_type, decision.amount)
+                except ValueError:
+                    room.player_move(seat.player_id, "FOLD", 0)
+                    decision = decision.__class__(
+                        move_type="FOLD",
+                        amount=0,
+                        reason="Fallback to legal fold after invalid MiniMax move.",
+                        source="fallback",
+                        transcript_path=decision.transcript_path,
+                        raw_response=decision.raw_response,
+                    )
+                room.log_line(
+                    f"{room.players.get(seat.player_id, 'Bot')} minimax bot chose {decision.move_type}",
+                    event_type="MINIMAX_BOT_DECISION",
+                    hand_id=room.current_hand_id,
+                    data={
+                        "bot_id": seat.player_id,
+                        "decision": {"move_type": decision.move_type, "amount": decision.amount},
+                        "reason": decision.reason,
+                        "source": decision.source,
+                        "transcript_path": decision.transcript_path,
+                        "raw_response": decision.raw_response,
+                    },
+                )
             changed = True
             safety += 1
             if safety >= 12:

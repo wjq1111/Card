@@ -230,6 +230,7 @@ class PokerApp:
         self._seat_hitboxes: list[tuple[pygame.Rect, int]] = []
         self._last_countdown_tip: tuple[str, int] | None = None
         self._avatar_picker_open = False
+        self._bot_menu_open = False
         self.ui_debug = ui_debug
         self.ui_config = default_login_ui_config()
         self._ui_config_mtime: float | None = None
@@ -354,6 +355,9 @@ class PokerApp:
         elif action == "add_bot":
             self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addbot")))
             self.set_status("已请求添加机器人。")
+        elif action == "add_minimax_bot":
+            self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addminimaxbot")))
+            self.set_status("已请求添加 MiniMax 机器人。")
         elif action == "fold":
             self.move(poker_pb2.FOLD)
         elif action == "check":
@@ -519,6 +523,7 @@ class PokerApp:
             )
         if self.is_room_owner():
             header_specs.insert(0, ("添加 Bot", "add_bot", BLUE, self.can_add_bot()))
+            header_specs.insert(0, ("添加 MiniMax", "add_minimax_bot", BLUE, self.can_add_bot()))
             header_specs.insert(0, ("开始游戏", "start_game", GREEN, self.can_start_game()))
 
         header_rects = layout_button_row(width - 44, 42, 106, 42, len(header_specs), gap=8)
@@ -553,6 +558,147 @@ class PokerApp:
         for rect, (label, action, color, enabled) in zip(action_rects, specs):
             buttons.append(Button(rect, label, action, color, enabled))
         return buttons
+
+    # Override the earlier room-button implementation with a dropdown-style bot selector.
+    def make_room_buttons(self) -> list[Button]:
+        width, height = self.screen.get_size()
+        header_specs: list[tuple[str, str, tuple[int, int, int], bool]] = [
+            ("绂诲紑鎴块棿", "leave_room", PANEL_2, True),
+        ]
+        hero_seat = self.hero_seat()
+        can_toggle_ready = bool(
+            hero_seat
+            and self.snapshot
+            and self.snapshot.room_status == poker_pb2.OPEN
+            and self.snapshot.phase in (poker_pb2.WAITING, poker_pb2.HAND_COMPLETE)
+        )
+        ready_label = "鍙栨秷鍑嗗" if hero_seat and hero_seat.ready else "鍑嗗"
+        if hero_seat:
+            header_specs.insert(0, (ready_label, "ready", GOLD, can_toggle_ready))
+            header_specs.insert(
+                1,
+                (
+                    "绂诲骇",
+                    "stand",
+                    PANEL_2,
+                    bool(self.snapshot and self.snapshot.room_status == poker_pb2.OPEN),
+                ),
+            )
+        if self.is_room_owner():
+            bot_menu_enabled = self.can_add_bot()
+            if not bot_menu_enabled:
+                self._bot_menu_open = False
+            header_specs.insert(0, ("Add Bot", "toggle_bot_menu", BLUE, bot_menu_enabled))
+            header_specs.insert(0, ("Start", "start_game", GREEN, self.can_start_game()))
+
+        header_rects = layout_button_row(width - 44, 42, 112, 42, len(header_specs), gap=8)
+        buttons = [
+            Button(rect, label, action, color, enabled)
+            for rect, (label, action, color, enabled) in zip(header_rects, header_specs)
+        ]
+
+        menu_anchor = next((button for button in buttons if button.action == "toggle_bot_menu"), None)
+        if self._bot_menu_open and menu_anchor and menu_anchor.enabled:
+            option_specs = [
+                ("Score Bot", "add_guarded_bot", PANEL_2, True),
+                ("LLM Bot", "add_minimax_bot", BLUE, True),
+            ]
+            option_width = max(menu_anchor.rect.width + 34, 154)
+            option_height = 38
+            option_gap = 6
+            for index, (label, action, color, enabled) in enumerate(option_specs):
+                option_rect = pygame.Rect(
+                    menu_anchor.rect.x,
+                    menu_anchor.rect.bottom + 8 + index * (option_height + option_gap),
+                    option_width,
+                    option_height,
+                )
+                buttons.append(Button(option_rect, label, action, color, enabled))
+
+        actions = self.available_actions()
+        specs = [
+            ("Fold", "fold", RED, actions["fold"]),
+            ("Check", "check", PANEL_2, actions["check"]),
+            ("Call", "call", BLUE, actions["call"]),
+            ("Raise", "raise", GOLD, actions["raise"]),
+            ("All In", "all_in", RED, actions["all_in"]),
+        ]
+        input_width = 140 if width >= 1100 else 116
+        action_width = 90
+        gap = 12
+        total_width = input_width + gap + len(specs) * action_width + (len(specs) - 1) * gap
+        start_x = width - 26 - total_width
+        self.raise_input.rect = pygame.Rect(start_x, height - 66, input_width, 40)
+        action_rects = [
+            pygame.Rect(
+                self.raise_input.rect.right + gap + index * (action_width + gap),
+                height - 66,
+                action_width,
+                40,
+            )
+            for index in range(len(specs))
+        ]
+        for rect, (label, action, color, enabled) in zip(action_rects, specs):
+            buttons.append(Button(rect, label, action, color, enabled))
+        return buttons
+
+    # Override the earlier dispatch implementation to support the dropdown bot selector.
+    def dispatch(self, action: str) -> None:
+        if action == "login":
+            self.login()
+        elif action == "refresh":
+            self.send(poker_pb2.ClientEvent(list_rooms=poker_pb2.ListRooms()))
+        elif action == "create_room":
+            self.send(poker_pb2.ClientEvent(create_room=poker_pb2.CreateRoom()))
+        elif action == "join_room" and self.selected_room_id:
+            self.send(
+                poker_pb2.ClientEvent(join_room_by_id=poker_pb2.JoinRoomById(room_id=self.selected_room_id))
+            )
+        elif action == "leave_room":
+            self.send(poker_pb2.ClientEvent(leave_room=poker_pb2.LeaveRoom()))
+            self.snapshot = None
+            self._bot_menu_open = False
+        elif action.startswith("seat:"):
+            seat_index = int(action.split(":")[1])
+            hero_seat = self.hero_seat()
+            if hero_seat:
+                self.send(poker_pb2.ClientEvent(change_seat=poker_pb2.ChangeSeat(seat_index=seat_index)))
+            else:
+                self.send(poker_pb2.ClientEvent(sit_down=poker_pb2.SitDown(seat_index=seat_index)))
+        elif action == "stand":
+            self.send(poker_pb2.ClientEvent(stand_up=poker_pb2.StandUp()))
+        elif action == "ready":
+            hero_seat = self.hero_seat()
+            if hero_seat:
+                self.send(poker_pb2.ClientEvent(set_ready=poker_pb2.SetReady(ready=not hero_seat.ready)))
+        elif action == "start_game":
+            self.send(poker_pb2.ClientEvent(start_hand=poker_pb2.StartHand()))
+            self._bot_menu_open = False
+        elif action == "toggle_bot_menu":
+            self._bot_menu_open = not self._bot_menu_open
+        elif action == "add_guarded_bot":
+            self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addbot")))
+            self._bot_menu_open = False
+            self.set_status("Requested score bot.", duration=2.0)
+        elif action == "add_minimax_bot":
+            self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addminimaxbot")))
+            self._bot_menu_open = False
+            self.set_status("Requested LLM bot.", duration=2.0)
+        elif action == "fold":
+            self.move(poker_pb2.FOLD)
+        elif action == "check":
+            self.move(poker_pb2.CHECK)
+        elif action == "call":
+            self.move(poker_pb2.CALL)
+        elif action == "raise":
+            amount = self.resolve_raise_amount()
+            if amount is not None:
+                self.move(poker_pb2.RAISE, amount)
+        elif action == "all_in":
+            self.move(poker_pb2.ALL_IN)
+        elif action == "gm_add_chips":
+            self.send(poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/gm addchips 2000")))
+            self.set_status("Requested GM chips.", duration=2.0)
 
     def hero_seat(self):
         if not self.connection or not self.snapshot:
@@ -1431,6 +1577,7 @@ def localize_log_line(text: str) -> str:
         ("moved all in", "全下"),
         ("started the game countdown", "发起开局倒计时"),
         ("joined as a guarded bot", "作为机器人加入"),
+        ("joined as a minimax bot", "作为 MiniMax 机器人加入"),
         ("Table reset for the next hand", "牌桌已重置，等待下一手"),
     ]
     for source, target in replacements:
@@ -1465,6 +1612,8 @@ def localize_log_line(text: str) -> str:
     if line.startswith("Hand ") and line.endswith(" started"):
         hand_number = line[5:-8].strip()
         return f"第 {hand_number} 手开始"
+    if "minimax bot chose" in line:
+        return line.replace("minimax bot chose", "MiniMax 机器人选择")
     if "bot chose" in line:
         return line.replace("bot chose", "机器人选择")
     return line

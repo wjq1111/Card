@@ -109,11 +109,13 @@ class ScoreWeights:
     name: str = "default"
     check_made_strength: float = 0.30
     check_draw_strength: float = 0.20
+    check_equity: float = 0.12
     check_position_score: float = 0.15
     check_board_wetness: float = -0.15
     check_passive_bias: float = 0.10
     call_made_strength: float = 0.35
     call_draw_strength: float = 0.30
+    call_equity: float = 0.40
     call_pot_odds_fit: float = 0.45
     call_looseness: float = 0.10
     call_pressure_score: float = -0.35
@@ -122,12 +124,14 @@ class ScoreWeights:
     fold_pressure_score: float = 0.45
     fold_weak_made: float = 0.30
     fold_weak_draw: float = 0.20
+    fold_equity: float = -0.40
     fold_pot_odds_fit: float = -0.35
     fold_looseness: float = -0.10
     fold_recent_raise_pressure: float = 0.20
     raise_value_made_strength: float = 0.45
     raise_value_board_wetness: float = 0.15
     raise_bluff_draw_strength: float = 0.30
+    raise_equity: float = 0.55
     raise_bluff_position_score: float = 0.20
     raise_bluff_board_wetness: float = 0.15
     raise_opponent_fold_to_raise: float = 0.20
@@ -138,6 +142,7 @@ class ScoreWeights:
     raise_size_risk: float = -0.20
     all_in_made_strength: float = 0.65
     all_in_draw_strength: float = 0.20
+    all_in_equity: float = 0.80
     all_in_low_spr: float = 0.25
     all_in_risk_tolerance: float = 0.20
     all_in_aggression: float = 0.15
@@ -157,6 +162,7 @@ class ScoreWeights:
 class BotFeatures:
     made_strength: float
     draw_strength: float
+    equity: float
     pot_odds_fit: float
     position_score: float
     pressure_score: float
@@ -172,6 +178,7 @@ class BotFeatures:
         return {
             "made_strength": self.made_strength,
             "draw_strength": self.draw_strength,
+            "equity": self.equity,
             "pot_odds_fit": self.pot_odds_fit,
             "position_score": self.position_score,
             "pressure_score": self.pressure_score,

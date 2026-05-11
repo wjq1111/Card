@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+import random
 
+from src.server.bots.equity import estimate_equity
 from src.server.bots.models import BotFeatures, BotObservation, BotProfile
 from src.shared.cards import Card
 from src.shared.hand_evaluator import RANK_VALUES, evaluate_best_hand
@@ -16,11 +18,16 @@ def clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return max(low, min(high, value))
 
 
-def extract_features(observation: BotObservation, profile: BotProfile | None = None) -> BotFeatures:
+def extract_features(
+    observation: BotObservation,
+    profile: BotProfile | None = None,
+    rng: random.Random | None = None,
+) -> BotFeatures:
     profile = profile or BotProfile()
     made = made_strength(observation, profile)
     draw = draw_strength(observation)
-    pot_odds = pot_odds_fit(observation, made, draw)
+    equity = estimate_equity(observation, rng=rng)
+    pot_odds = pot_odds_fit(observation, made, draw, equity)
     position = position_score(observation)
     pressure = pressure_score(observation)
     spr = spr_score(observation)
@@ -33,6 +40,7 @@ def extract_features(observation: BotObservation, profile: BotProfile | None = N
     return BotFeatures(
         made_strength=made,
         draw_strength=draw,
+        equity=equity,
         pot_odds_fit=pot_odds,
         position_score=position,
         pressure_score=pressure,
@@ -161,12 +169,12 @@ def straight_draw_score(ranks: set[int]) -> float:
     return best
 
 
-def pot_odds_fit(observation: BotObservation, made: float, draw: float) -> float:
+def pot_odds_fit(observation: BotObservation, made: float, draw: float, equity: float) -> float:
     if observation.to_call <= 0:
         return 1.0
     pot_after_call = observation.pot + observation.to_call
     pot_odds = observation.to_call / max(1, pot_after_call)
-    estimated_equity = made * 0.75 + draw * 0.55
+    estimated_equity = max(equity, made * 0.55 + draw * 0.45)
     return clamp((estimated_equity - pot_odds + 0.25) / 0.50)
 
 
@@ -211,28 +219,19 @@ def board_wetness(board_cards: tuple[Card, ...]) -> float:
 
 
 def opponent_vpip_score(observation: BotObservation) -> float:
-    if not observation.opponents:
-        return 0.0
-    return clamp(sum(opponent.vpip_rate for opponent in observation.opponents) / len(observation.opponents))
+    return weighted_opponent_average(observation, lambda opponent: opponent.vpip_rate)
 
 
 def opponent_pfr_score(observation: BotObservation) -> float:
-    if not observation.opponents:
-        return 0.0
-    return clamp(sum(opponent.pfr_rate for opponent in observation.opponents) / len(observation.opponents))
+    return weighted_opponent_average(observation, lambda opponent: opponent.pfr_rate)
 
 
 def opponent_aggression_score(observation: BotObservation) -> float:
-    if not observation.opponents:
-        return 0.0
-    normalized = [clamp(opponent.aggression_factor / 3.0) for opponent in observation.opponents]
-    return clamp(sum(normalized) / len(normalized))
+    return weighted_opponent_average(observation, lambda opponent: clamp(opponent.aggression_factor / 3.0))
 
 
 def opponent_fold_to_raise_score(observation: BotObservation) -> float:
-    if not observation.opponents:
-        return 0.0
-    return clamp(sum(opponent.fold_to_raise_rate for opponent in observation.opponents) / len(observation.opponents))
+    return weighted_opponent_average(observation, lambda opponent: opponent.fold_to_raise_rate)
 
 
 def recent_raise_pressure_score(observation: BotObservation) -> float:
@@ -240,8 +239,43 @@ def recent_raise_pressure_score(observation: BotObservation) -> float:
     if not active_opponents:
         return 0.0
     score = 0.0
+    total_weight = 0.0
     for opponent in active_opponents:
-        score += opponent.recent_raise_rate * 0.6
+        weight = opponent_pressure_weight(observation, opponent)
+        score += weight * opponent.recent_raise_rate * 0.6
         if opponent.last_action in {"RAISE", "ALL_IN"}:
-            score += 0.4
-    return clamp(score / len(active_opponents))
+            score += weight * 0.4
+        total_weight += weight
+    return clamp(score / max(1.0, total_weight))
+
+
+def weighted_opponent_average(
+    observation: BotObservation,
+    value_getter,
+) -> float:
+    active_opponents = [opponent for opponent in observation.opponents if not opponent.folded]
+    if not active_opponents:
+        return 0.0
+    weighted_sum = 0.0
+    total_weight = 0.0
+    for opponent in active_opponents:
+        weight = opponent_pressure_weight(observation, opponent)
+        weighted_sum += weight * clamp(value_getter(opponent))
+        total_weight += weight
+    return clamp(weighted_sum / max(1.0, total_weight))
+
+
+def opponent_pressure_weight(observation: BotObservation, opponent) -> float:
+    weight = 1.0
+    if opponent.all_in:
+        weight += 0.15
+    if observation.to_call > 0:
+        pressure_share = max(0, opponent.committed - observation.committed) / max(1, observation.to_call)
+        weight += clamp(pressure_share, 0.0, 2.0) * 1.2
+        if opponent.committed == observation.current_bet:
+            weight += 0.8
+        if opponent.last_action_phase == observation.phase and opponent.last_action in {"RAISE", "ALL_IN"}:
+            weight += 1.6
+    elif opponent.last_action_phase == observation.phase and opponent.last_action in {"RAISE", "ALL_IN"}:
+        weight += 0.6
+    return weight

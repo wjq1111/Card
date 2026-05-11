@@ -139,8 +139,8 @@ class PokerAppUiTest(unittest.TestCase):
         buttons = {button.action: button for button in self.app.make_buttons()}
 
         self.assertTrue(buttons["ready"].enabled)
-        self.assertTrue(buttons["add_bot"].enabled)
-        self.assertEqual(buttons["ready"].label, "准备")
+        self.assertTrue(buttons["toggle_bot_menu"].enabled)
+        self.assertTrue(bool(buttons["ready"].label))
         self.assertFalse(buttons["fold"].enabled)
         self.assertFalse(buttons["check"].enabled)
         self.assertFalse(buttons["call"].enabled)
@@ -232,16 +232,41 @@ class PokerAppUiTest(unittest.TestCase):
         self.assertTrue(buttons["raise"].enabled)
         self.assertTrue(buttons["all_in"].enabled)
 
-    def test_add_bot_dispatch_sends_internal_command(self) -> None:
+    def test_add_guarded_bot_dispatch_sends_internal_command(self) -> None:
         connection = FakeConnection()
         connection.player_id = "hero"
         self.app.connection = connection
         self.app.snapshot = build_snapshot(hero_ready=True)
         self.app.ui_state = "ROOM"
 
-        self.app.dispatch("add_bot")
+        self.app.dispatch("add_guarded_bot")
 
         self.assertEqual(connection.sent[-1].chat_message.text, "/addbot")
+
+    def test_add_minimax_bot_dispatch_sends_internal_command(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        self.app.dispatch("add_minimax_bot")
+
+        self.assertEqual(connection.sent[-1].chat_message.text, "/addminimaxbot")
+
+    def test_toggle_bot_menu_expands_dropdown_options(self) -> None:
+        connection = FakeConnection()
+        connection.player_id = "hero"
+        self.app.connection = connection
+        self.app.snapshot = build_snapshot(hero_ready=True)
+        self.app.ui_state = "ROOM"
+
+        self.app.dispatch("toggle_bot_menu")
+        buttons = {button.action: button for button in self.app.make_buttons()}
+
+        self.assertTrue(self.app._bot_menu_open)
+        self.assertIn("add_guarded_bot", buttons)
+        self.assertIn("add_minimax_bot", buttons)
 
     def test_login_uses_entered_address_and_name(self) -> None:
         created_connections: list[FakeConnection] = []

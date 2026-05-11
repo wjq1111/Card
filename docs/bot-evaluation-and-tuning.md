@@ -6,6 +6,7 @@ Single-hand bot output is only a smoke test. It proves the bot can observe state
 score legal actions, and apply a move through `PokerRoom.player_move()`.
 
 To judge whether a profile is good or bad, we need repeated, deterministic matches.
+To understand why one specific hand went wrong, we also need structured replay.
 
 ## Deterministic Match Runner
 
@@ -24,6 +25,29 @@ This runner:
 
 The key benefit is repeatability. If we keep the same profiles and the same seed series,
 the report should be identical across runs.
+
+## Hand Replay
+
+When a profile looks wrong in aggregate, inspect a concrete hand:
+
+```powershell
+python tools\replay_hand.py --room-id room-123456 --hand-id room-123456-h0007
+```
+
+This replay renders:
+
+1. hand start, stacks, blinds, and hole cards recorded in the server log
+2. street-by-street board rollout
+3. every action and resulting pot movement
+4. every `BOT_DECISION` line with its chosen move and reason
+5. showdown or uncontested result with chip deltas
+
+The intended workflow is:
+
+1. use `run_bot_match.py` or real play to find suspicious outcomes
+2. locate the offending `hand_id`
+3. replay that hand and inspect the bot decision line
+4. only then change weights, preflop tiers, or equity sampling
 
 ## How To Judge A Profile
 

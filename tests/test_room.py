@@ -1,5 +1,6 @@
 import random
 import unittest
+import json
 from tempfile import TemporaryDirectory
 
 from src.server.chip_store import PlayerChipStore
@@ -204,6 +205,18 @@ class RoomRulesTest(unittest.TestCase):
             hand_id = room.last_hand_summary.hand_id
             self.assertTrue(logger.room_log_path("test").exists())
             self.assertTrue(logger.hand_log_path("test", room.hand_number, hand_id).exists())
+            hand_jsonl = logger.hand_log_jsonl_path("test", room.hand_number, hand_id)
+            with hand_jsonl.open("r", encoding="utf-8") as handle:
+                records = [json.loads(line) for line in handle]
+            hand_start = next(record for record in records if record["event_type"] == "HAND_START")
+            action = next(record for record in records if record["event_type"] == "ACTION")
+            hand_end = next(record for record in records if record["event_type"] == "HAND_END")
+            self.assertIn("seats", hand_start["data"])
+            self.assertIn("hole_cards", hand_start["data"]["seats"][0])
+            self.assertEqual(action["data"]["move_type"], "FOLD")
+            self.assertIn("pot_after", action["data"])
+            self.assertIn("actions", hand_end["data"])
+            self.assertTrue(hand_end["data"]["actions"])
 
     def test_sit_uses_resolved_chip_balance(self) -> None:
         room = PokerRoom("test", chip_resolver=lambda _player_id, _name: 3456)

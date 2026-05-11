@@ -22,6 +22,7 @@
 src/server/bots/
   __init__.py
   models.py
+  equity.py
   features.py
   policy.py
   controller.py
@@ -33,12 +34,15 @@ src/server/bots/
    定义 `BotObservation`、`BotDecision`、`BotProfile`、`ActionScore`。
 
 2. `features.py`
-   从 `BotObservation` 提取评分特征，例如牌力、听牌、底池赔率、位置、SPR、牌面湿度，以及对手 VPIP / PFR / 激进度 / 近期加注压力。
+   从 `BotObservation` 提取评分特征，例如牌力、听牌、Monte Carlo equity、底池赔率、位置、SPR、牌面湿度，以及按当前施压者加权后的对手 VPIP / PFR / 激进度 / 近期加注压力。
 
-3. `policy.py`
+3. `equity.py`
+   用共享的牌型评估逻辑做轻量 Monte Carlo 采样，给当前局面估算真实权益。
+
+4. `policy.py`
    对合法候选动作打分并选择动作。
 
-4. `controller.py`
+5. `controller.py`
    从 `PokerRoom` 构造 `BotObservation`，调用 policy，并把结果交回 `room.player_move()`。
 
 第一版不需要改 protobuf。bot 可以先作为服务端创建的特殊玩家加入房间，后续如果要让客户端按钮“添加 bot”，再扩展协议。
@@ -57,6 +61,7 @@ from src.shared.cards import Card
 class BotObservation:
     player_id: str
     seat_index: int
+    seat_count: int
     phase: str
     hole_cards: tuple[Card, ...]
     board_cards: tuple[Card, ...]
@@ -71,6 +76,7 @@ class BotObservation:
     live_player_count: int
     acting_player_count: int
     legal_actions: tuple[str, ...]
+    opponents: tuple[OpponentSnapshot, ...] = ()
 ```
 
 派生字段：
@@ -130,6 +136,24 @@ class BotProfile:
 
 所有特征归一化到 `0.0` 到 `1.0`。
 
+### `equity`
+
+当前实现会额外计算一个 Monte Carlo equity 特征：
+
+```text
+1. 固定 hero 手牌与已知公共牌
+2. 为剩余存活对手随机发手牌
+3. 随机补齐未发出的公共牌
+4. 复用 `evaluate_best_hand()` 比较胜负
+5. 多次采样后取平均赢池份额
+```
+
+这不是完整求解器，但比单看 `made_strength + draw_strength` 更接近真实胜率，尤其适合：
+
+1. 翻前没有成牌时的手牌比较
+2. 听牌 vs 成牌的边界局面
+3. 多人池里同一牌型强度不等于真实权益的情况
+
 ### `made_strength`
 
 当前成牌强度。第一版可以这样近似：
@@ -177,11 +201,25 @@ Turn 的听牌分乘以 `0.75`，River 没有听牌分。
 call_price = to_call
 pot_after_call = pot + to_call
 pot_odds = call_price / pot_after_call
-estimated_equity = made_strength * 0.75 + draw_strength * 0.55
+estimated_equity = max(equity, made_strength * 0.55 + draw_strength * 0.45)
 pot_odds_fit = clamp((estimated_equity - pot_odds + 0.25) / 0.50)
 ```
 
 直觉是：权益明显高于所需赔率时接近 `1.0`，明显不够时接近 `0.0`。
+
+### 对手特征加权
+
+当前实现不再对所有对手做简单平均，而是优先放大“正在施压的人”：
+
+```text
+weight =
+  1.0
++ 当前下注压力份额
++ 当前街最后一次 aggressive action 加权
++ 当前已顶到 current_bet 的额外权重
+```
+
+这样在多人局里，bot 不会被无关的被动玩家把桌风均值稀释掉。
 
 ### `position_score`
 
@@ -232,24 +270,56 @@ paired_board          +0.15
 
 ## 候选动作
 
-第一版从合法动作生成固定候选：
+当前实现从合法动作生成固定候选：
 
 1. `FOLD`
 2. `CHECK`
 3. `CALL`
-4. `RAISE` 到 `50% pot`
-5. `RAISE` 到 `75% pot`
+4. `RAISE` 到常见翻前开局/再加注档位
+5. `RAISE` 到常见翻后底池比例档位
 6. `ALL_IN`
 
-`RAISE` 目标额计算：
+翻前：
+
+```text
+open raise:
+  current_bet + 1.5 * min_raise
+  current_bet + 2.0 * min_raise
+
+re-raise:
+  current_bet + 2 * min_raise
+  current_bet + 3 * min_raise
+```
+
+翻后：
 
 ```text
 target = committed + to_call + round(pot * ratio)
-target = max(target, current_bet + min_raise)
-target = min(target, committed + chips)
+ratio in {0.33, 0.50, 0.75}
 ```
 
-如果 target 达不到合法最小加注，则不生成该 `RAISE` 候选。
+然后统一做两步归一化：
+
+```text
+1. 先把 target 限制到 [minimum_raise_to, maximum_raise_to)
+2. 再按 10 筹码粒度 round，避免 147 这类散注
+```
+
+如果归一化后达不到合法最小加注，则不生成该 `RAISE` 候选。
+
+翻前策略不再只靠统一 sizing，而是先分层：
+
+1. `UNOPENED`
+2. `FACING_OPEN`
+3. `FACING_3BET`
+4. `SHORT_STACK_JAM`
+
+每层都会对 `FOLD / CALL / RAISE / ALL_IN` 施加不同的额外修正，因此 bot 会在翻前更明显地区分：
+
+1. 正常开池
+2. 面对一次加注继续
+3. 面对 3-bet 收紧范围
+4. 短码下的 shove / fold 决策
 
 ## 基础权重模型
 
@@ -261,6 +331,7 @@ target = min(target, committed + chips)
 score_check =
   0.30 * made_strength
 + 0.20 * draw_strength
++ 0.12 * equity
 + 0.15 * position_score
 - 0.15 * board_wetness
 + 0.10 * (1 - aggression)
@@ -274,13 +345,15 @@ score_check =
 score_call =
   0.35 * made_strength
 + 0.30 * draw_strength
++ 0.40 * equity
 + 0.45 * pot_odds_fit
 + 0.10 * looseness
 - 0.35 * pressure_score
 + 0.10 * risk_tolerance
++ 0.15 * opponent_aggression
 ```
 
-解释：call 主要由“牌是否够好”和“价格是否合理”决定。压力越大，call 越被惩罚。
+解释：call 主要由“牌是否够好”和“价格是否合理”决定。当前实现还会把对手激进度纳入考量，避免 bot 面对高频进攻型对手时过度弃牌。
 
 ### `FOLD`
 
@@ -289,11 +362,13 @@ score_fold =
   0.45 * pressure_score
 + 0.30 * (1 - made_strength)
 + 0.20 * (1 - draw_strength)
-- 0.35 * pot_odds_fit
++ fold_equity * equity
++ -0.35 * pot_odds_fit
 - 0.10 * looseness
++ 0.20 * recent_raise_pressure
 ```
 
-解释：fold 不是默认坏动作。面对大注、弱牌、没听牌时，它应该自然胜出。
+解释：fold 不是默认坏动作。面对大注、弱牌、没听牌、且桌上近期加注压力持续偏高时，它应该自然胜出。
 
 ### `RAISE`
 
@@ -310,6 +385,9 @@ semi_bluff_raise =
 score_raise =
   value_raise
 + semi_bluff_raise
++ 0.55 * equity
++ 0.20 * opponent_fold_to_raise
+- 0.10 * opponent_vpip
 + 0.25 * aggression
 + 0.10 * bluff_rate
 - 0.30 * pressure_score
@@ -322,7 +400,7 @@ score_raise =
 raise_size_risk = raise_extra / max(1, chips + committed)
 ```
 
-解释：raise 同时支持价值下注和半诈唬，但大额下注会被风险项压低。
+解释：raise 同时支持价值下注和半诈唬。当前实现已经把“对手是否容易弃牌”和“对手是否松跟”纳入 raise 决策，因此 bot 会对不同桌风做出有限但真实的调整。
 
 ### `ALL_IN`
 
@@ -330,6 +408,7 @@ raise_size_risk = raise_extra / max(1, chips + committed)
 score_all_in =
   0.65 * made_strength
 + 0.20 * draw_strength
++ 0.80 * equity
 + 0.25 * (1 - spr_score)
 + 0.20 * risk_tolerance
 + 0.15 * aggression
@@ -387,8 +466,10 @@ made_strength += (looseness - 0.5) * 0.10
 6. 加入轻微 randomness
 7. 选择最高分
 8. 如果输出动作被 room.player_move() 拒绝，fallback：
-   - 面对下注优先 CALL，如果不能 CALL 就 FOLD
-   - 未面对下注优先 CHECK
+   - 未面对下注优先 `CHECK`
+   - 面对下注优先 `CALL`
+   - 其次 `FOLD`
+   - 最后才是 `ALL_IN`
 ```
 
 ## 可解释日志
@@ -445,7 +526,7 @@ made_strength += (looseness - 0.5) * 0.10
 
 ## 测试建议
 
-建议新增：
+当前代码已经覆盖的基础测试：
 
 ```text
 tests/test_bot_policy.py
@@ -460,7 +541,7 @@ tests/test_bot_policy.py
 5. `test_all_in_is_penalized_for_weak_hand`
 6. `test_raise_amount_is_within_room_limits`
 
-如果接入 `PokerRoom`，再加：
+当前代码已经覆盖的控制器测试：
 
 ```text
 tests/test_bot_controller.py
@@ -470,17 +551,25 @@ tests/test_bot_controller.py
 
 1. bot 只在自己行动位出手。
 2. bot 决策最终通过 `room.player_move()` 应用。
-3. 非法策略输出会 fallback 到合法动作。
+3. 可观测状态只暴露 bot 合法可见信息。
+4. 对手倾向统计会进入 observation。
+
+额外已经补上的策略测试：
+
+1. 加注候选会规整到人类常见筹码粒度。
+2. 调整 `ScoreWeights` 可以翻转最终动作。
+3. 高激进对手画像可以把决策从 `FOLD` 推向 `CALL`。
 
 ## 后续升级
 
-第一版跑起来后，建议按这个顺序升级：
+基于当前代码状态，下一轮更值得做的是：
 
-1. 加 Monte Carlo equity，用模拟胜率替换部分 `made_strength + draw_strength`。
-2. 加 opponent profile，根据对手 VPIP/PFR/ aggression 调整 `fold_equity`。
-3. 加 A/B 对打工具，比较不同权重配置的 `bb/100`。
-4. 把 profile 保存成配置文件，允许不同陪打 bot 拥有不同风格。
+1. 把“当前施压者权重更高”再升级成“当前施压者 + 下注线历史”联合建模。
+2. 让 Monte Carlo sample count 根据街位、多人池规模、all-in 风险自适应，而不是固定档位。
+3. 把 profile / weights 外置成配置或预设，支持 `guarded`、`loose`、`nit` 等多种 bot 性格。
+4. 结合 `tools/run_bot_match.py`、`tools/tune_bot_profile.py` 和 `tools/replay_hand.py` 建立固定调参回归流程。
+5. 再往后考虑更重的范围估计或近似 solver，而不是直接把当前规则系统推倒重来。
 
 ## 当前试玩接入
 
-当前客户端试玩入口默认接入一个服务端托管的 `guarded` bot。房主可在开局前点击“添加 Bot”，服务端会创建 bot、自动入座、自动准备，并在轮到该 bot 时通过现有 `PokerRoom.player_move()` 链路自动行动。
+当前客户端试玩入口默认接入一个服务端托管的 `guarded` bot。房主可在开局前点击“添加 Bot”，客户端通过现有聊天命令 `/addbot` 触发服务端创建 bot；bot 会自动入座、自动准备，并在轮到自己时等待约 1 秒后通过现有 `PokerRoom.player_move()` 链路自动行动。

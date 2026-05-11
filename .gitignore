@@ -7,3 +7,4 @@ runtime_logs
 artifacts/pyinstaller/build
 artifacts/pyinstaller/dist
 deploy.password.txt
+api.key

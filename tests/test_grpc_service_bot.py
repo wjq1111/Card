@@ -4,7 +4,7 @@ from queue import Queue
 from unittest.mock import patch
 
 from src.proto_gen import poker_pb2
-from src.server.grpc_service import BOT_PREFIX, PokerService
+from src.server.grpc_service import BOT_PREFIX, MINIMAX_BOT_PREFIX, PokerService
 from src.server.room import Phase
 
 
@@ -63,6 +63,46 @@ class PokerServiceBotTest(unittest.TestCase):
 
         self.assertNotIn(room.room_id, service.rooms)
 
+    def test_add_minimax_bot_seats_and_readies_bot(self) -> None:
+        service = self.build_service()
+        room = service.create_room_for_test()
+
+        service.add_minimax_bot("owner", room)
+
+        bot_ids = [player_id for player_id in room.players if player_id.startswith(MINIMAX_BOT_PREFIX)]
+        self.assertEqual(len(bot_ids), 1)
+        bot_seat = room.find_seat(bot_ids[0])
+        self.assertIsNotNone(bot_seat)
+        self.assertTrue(bot_seat.ready)
+        self.assertTrue(bot_seat.name.startswith("MiniMax Bot"))
+
+    def test_run_service_bots_plays_minimax_turns_and_writes_transcript(self) -> None:
+        service = self.build_service()
+        room = service.create_room_for_test()
+        service.add_minimax_bot("owner", room)
+        room.set_ready("owner", True)
+        room.start_hand()
+        bot_ids = [player_id for player_id in room.players if player_id.startswith(MINIMAX_BOT_PREFIX)]
+        bot_id = bot_ids[0]
+        room.active_seat = room.require_seat(bot_id).seat_index
+
+        with patch("src.server.grpc_service.run_minimax_bot_turn") as mocked_turn:
+            mocked_turn.return_value.move_type = "CALL"
+            mocked_turn.return_value.amount = 0
+            mocked_turn.return_value.reason = "test decision"
+            mocked_turn.return_value.source = "model"
+            mocked_turn.return_value.transcript_path = "runtime_logs/minimax_bots/test.md"
+            mocked_turn.return_value.raw_response = "[机器人决策]"
+
+            changed = service.run_service_bots(room, now=10.0)
+            self.assertFalse(changed)
+
+            changed = service.run_service_bots(room, now=11.2)
+
+        self.assertTrue(changed)
+        self.assertNotEqual(room.active_seat, room.require_seat(bot_id).seat_index)
+        self.assertTrue(any("minimax bot chose" in line for line in room.log))
+
     def test_gm_add_chips_command_updates_seated_stack(self) -> None:
         service = self.build_service()
         room = service.create_room_for_test()
@@ -76,6 +116,19 @@ class PokerServiceBotTest(unittest.TestCase):
 
         self.assertEqual(seat.chips, 4000)
         self.assertEqual(service.player_chip_balances["owner"], 4000)
+
+    def test_add_minimax_bot_chat_command_creates_minimax_bot(self) -> None:
+        service = self.build_service()
+        room = service.create_room_for_test()
+
+        service.handle_room_event(
+            "owner",
+            room.room_id,
+            poker_pb2.ClientEvent(chat_message=poker_pb2.ChatMessage(text="/addminimaxbot")),
+        )
+
+        bot_ids = [player_id for player_id in room.players if player_id.startswith(MINIMAX_BOT_PREFIX)]
+        self.assertEqual(len(bot_ids), 1)
 
 
 def _create_room_for_test(self: PokerService):
